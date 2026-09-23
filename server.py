@@ -1,6 +1,8 @@
+import os
 import socketserver
 import socket
 from message_handler import ChatHandler
+
 
 # Автоматический поиск свободного порта
 def find_free_port(start_port=5000, max_port=5100):
@@ -14,8 +16,13 @@ def find_free_port(start_port=5000, max_port=5100):
             continue
     return start_port
 
-PORT = find_free_port()
+
+# В Docker — PORT из окружения, локально — автопоиск
+PORT = int(os.environ.get('PORT', 0))
+if not PORT:
+    PORT = find_free_port()
 print(f"🔍 Используется порт: {PORT}")
+
 
 def run_server():
     """Запуск сервера"""
@@ -36,7 +43,7 @@ def run_server():
     print("=" * 50)
     print("Нажмите Ctrl+C для остановки")
     print("=" * 50)
-    
+
     try:
         with socketserver.TCPServer(("", PORT), ChatHandler) as httpd:
             httpd.serve_forever()
@@ -50,6 +57,7 @@ def run_server():
                 httpd.serve_forever()
         else:
             raise
+
 
 if __name__ == '__main__':
     run_server()

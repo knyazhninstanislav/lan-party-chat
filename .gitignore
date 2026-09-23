@@ -72,3 +72,4 @@ dmypy.json
 .pyre/
 backend/rabbitmq/
 *.erlang.cookie
+*.db

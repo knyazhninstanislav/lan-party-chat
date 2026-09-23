@@ -10,7 +10,7 @@ import base64
 from urllib.parse import urlparse
 
 # Инициализация базы данных
-DB_PATH = 'chat.db'
+DB_PATH = os.environ.get('DB_PATH', 'chat.db')
 
 def init_db():
     """Создание таблиц в базе данных"""
