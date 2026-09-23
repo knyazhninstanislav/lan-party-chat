@@ -1,0 +1,1713 @@
+        :root {
+            --bg-primary: #0a0a0a;
+            --bg-secondary: #141414;
+            --bg-tertiary: #1e1e1e;
+            --bg-hover: #282828;
+            --bg-input: #1a1a1a;
+            --text-primary: #e8e8e8;
+            --text-secondary: #a0a0a0;
+            --text-muted: #666666;
+            --accent-primary: #4d6bfe;
+            --accent-hover: #6a84ff;
+            --accent-glow: rgba(77, 107, 254, 0.15);
+            --border-color: #2a2a2a;
+            --ticket-own-bg: linear-gradient(135deg, #1a2a5a, #2a3a7a);
+            --ticket-other-bg: #1e1e1e;
+            --ticket-border: #2a2a2a;
+            --ticket-shadow: rgba(0, 0, 0, 0.4);
+            --scrollbar-track: #141414;
+            --scrollbar-thumb: #333333;
+            --scrollbar-thumb-hover: #444444;
+            --avatar-gradient: linear-gradient(135deg, #4d6bfe, #7c5cfc);
+            --notification-bg: #1a2a5a;
+            --notification-border: #4d6bfe;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        html, body {
+            height: 100%;
+            overflow: hidden;
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+
+        body {
+            background: var(--bg-primary);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 12px;
+            color: var(--text-primary);
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .chat-container {
+            width: 100%;
+            max-width: 1200px;
+            height: 100%;
+            max-height: 92vh;
+            background: var(--bg-secondary);
+            border-radius: 16px;
+            box-shadow: 0 24px 48px rgba(0,0,0,0.6);
+            display: flex;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+            position: relative;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 260px;
+            min-width: 260px;
+            background: var(--bg-tertiary);
+            border-right: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        .sidebar-header {
+            padding: 16px 20px 14px;
+            border-bottom: 1px solid var(--border-color);
+            flex-shrink: 0;
+        }
+
+        .sidebar-header .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+        }
+
+        .sidebar-header .logo i {
+            font-size: 22px;
+            color: var(--accent-primary);
+        }
+
+        .sidebar-header .logo h2 {
+            font-size: 17px;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent-primary), #7c5cfc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .sidebar-header .online-count {
+            font-size: 12px;
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .sidebar-header .online-count .dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #4ade80;
+            display: inline-block;
+            animation: pulse-dot 2s infinite;
+            flex-shrink: 0;
+        }
+
+        @keyframes pulse-dot {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+
+        .users-list {
+            flex: 1;
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding: 8px 8px 12px;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .user-item {
+            padding: 8px 12px;
+            margin-bottom: 2px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            transition: background 0.15s;
+            cursor: default;
+            height: 44px;
+            flex-shrink: 0;
+            min-height: 44px;
+        }
+
+        .user-item:hover { background: var(--bg-hover); }
+
+        .user-item .avatar {
+            width: 30px;
+            height: 30px;
+            min-width: 30px;
+            min-height: 30px;
+            border-radius: 50%;
+            background: var(--avatar-gradient);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 600;
+            font-size: 13px;
+            flex-shrink: 0;
+        }
+
+        .user-item .username {
+            font-size: 13px;
+            color: var(--text-primary);
+            flex: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .user-item .username .me-badge {
+            font-size: 10px;
+            color: var(--text-muted);
+            margin-left: 4px;
+        }
+
+        .user-item .status-dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #4ade80;
+            flex-shrink: 0;
+            animation: pulse-dot 2s infinite;
+        }
+
+        /* Main Chat */
+        .main-chat {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        .chat-header {
+            padding: 12px 20px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-shrink: 0;
+            background: var(--bg-secondary);
+            min-height: 60px;
+            height: 60px;
+        }
+
+        .chat-header .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 0;
+        }
+
+        .chat-header .header-left .room-info .room-name {
+            font-size: 15px;
+            font-weight: 600;
+            color: var(--text-primary);
+            white-space: nowrap;
+        }
+
+        .chat-header .header-left .room-info .room-status {
+            font-size: 11px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+        }
+
+        .chat-header .header-actions {
+            display: flex;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+
+        .chat-header .header-actions button {
+            padding: 6px 14px;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.2s;
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            height: 34px;
+            white-space: nowrap;
+        }
+
+        .chat-header .header-actions button:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+            border-color: var(--text-muted);
+        }
+
+        .chat-header .header-actions .logout-btn {
+            color: #f87171;
+            border-color: rgba(248, 113, 113, 0.2);
+        }
+
+        .chat-header .header-actions .logout-btn:hover {
+            background: rgba(248, 113, 113, 0.1);
+            border-color: rgba(248, 113, 113, 0.3);
+            color: #fca5a5;
+        }
+
+        /* Username Container */
+        .username-container {
+            padding: 12px 20px;
+            background: var(--bg-tertiary);
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-shrink: 0;
+            min-height: 62px;
+            height: 62px;
+        }
+
+        .username-container label {
+            font-weight: 500;
+            color: var(--text-secondary);
+            font-size: 13px;
+            flex-shrink: 0;
+        }
+
+        .username-container input {
+            flex: 1;
+            padding: 8px 14px;
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            font-size: 13px;
+            color: var(--text-primary);
+            transition: all 0.3s;
+            min-width: 0;
+            height: 36px;
+        }
+
+        .username-container input:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+
+        .username-container input::placeholder { color: var(--text-muted); }
+
+        .username-container button {
+            padding: 8px 20px;
+            background: var(--accent-primary);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s;
+            white-space: nowrap;
+            height: 36px;
+            font-size: 13px;
+            flex-shrink: 0;
+        }
+
+        .username-container button:hover {
+            background: var(--accent-hover);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px var(--accent-glow);
+        }
+
+        /* Messages - список заявок */
+        .chat-messages {
+            flex: 1;
+            padding: 16px 20px;
+            overflow-y: auto;
+            overflow-x: hidden;
+            background: var(--bg-primary);
+            min-height: 0;
+            -webkit-overflow-scrolling: touch;
+            overscroll-behavior: contain;
+        }
+
+        /* Каждое сообщение - карточка заявки */
+        .ticket {
+            margin-bottom: 16px;
+            display: flex;
+            flex-direction: column;
+            animation: slideIn 0.3s ease;
+            width: 100%;
+        }
+
+        .ticket .ticket-card {
+            background: var(--ticket-other-bg);
+            border: 1px solid var(--ticket-border);
+            border-radius: 12px;
+            padding: 14px 16px;
+            max-width: 85%;
+            min-width: 200px;
+            box-shadow: 0 2px 8px var(--ticket-shadow);
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+            position: relative;
+        }
+
+        .ticket .ticket-card:hover {
+            border-color: var(--accent-primary);
+            box-shadow: 0 4px 16px rgba(77, 107, 254, 0.1);
+        }
+
+        /* Свои заявки - справа */
+        .ticket.own {
+            align-items: flex-end;
+        }
+
+        .ticket.own .ticket-card {
+            background: var(--ticket-own-bg);
+            border-color: rgba(77, 107, 254, 0.3);
+        }
+
+        .ticket.own .ticket-card:hover {
+            border-color: var(--accent-primary);
+            box-shadow: 0 4px 20px rgba(77, 107, 254, 0.2);
+        }
+
+        /* Шапка заявки */
+        .ticket .ticket-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .ticket .ticket-header .ticket-avatar {
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            background: var(--avatar-gradient);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: 600;
+            font-size: 12px;
+            flex-shrink: 0;
+        }
+
+        .ticket .ticket-header .ticket-author {
+            font-weight: 600;
+            font-size: 13px;
+            color: var(--text-primary);
+            flex: 1;
+        }
+
+        .ticket .ticket-header .ticket-time {
+            font-size: 10px;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+
+        .ticket .ticket-header .ticket-badge {
+            font-size: 9px;
+            padding: 2px 8px;
+            border-radius: 10px;
+            background: var(--accent-primary);
+            color: white;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            flex-shrink: 0;
+        }
+
+        .ticket.own .ticket-header .ticket-badge {
+            background: rgba(77, 107, 254, 0.3);
+            color: var(--accent-primary);
+        }
+
+        /* Тело заявки - многострочный текст */
+        .ticket .ticket-body {
+            font-size: 13px;
+            line-height: 1.6;
+            color: var(--text-primary);
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            word-break: break-word;
+            overflow-wrap: break-word;
+            padding: 2px 0;
+        }
+
+        .ticket .ticket-body .edit-indicator {
+            font-size: 10px;
+            color: var(--text-muted);
+            margin-left: 6px;
+        }
+
+        /* Изображения в заявке */
+        .ticket .ticket-images {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .ticket .ticket-images .ticket-image {
+            max-width: 200px;
+            max-height: 200px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid var(--border-color);
+            object-fit: cover;
+        }
+
+        .ticket .ticket-images .ticket-image:hover {
+            transform: scale(1.02);
+            border-color: var(--accent-primary);
+        }
+
+        /* Ответ на сообщение */
+        .ticket .ticket-reply {
+            background: var(--reply-bg);
+            border-left: 3px solid var(--accent-primary);
+            padding: 6px 12px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .ticket .ticket-reply:hover {
+            background: rgba(77, 107, 254, 0.2);
+        }
+
+        .ticket .ticket-reply .reply-author {
+            color: var(--accent-primary);
+            font-weight: 600;
+        }
+
+        .ticket .ticket-reply .reply-text {
+            color: var(--text-muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* Действия над заявкой */
+        .ticket .ticket-actions {
+            display: flex;
+            gap: 4px;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid var(--border-color);
+            flex-wrap: wrap;
+        }
+
+
+        .ticket .ticket-actions button {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            cursor: pointer;
+            padding: 4px 10px;
+            font-size: 11px;
+            color: var(--text-secondary);
+            border-radius: 6px;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .ticket .ticket-actions button:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+            border-color: var(--text-muted);
+        }
+
+        .ticket .ticket-actions .reply-btn:hover {
+            color: var(--accent-primary);
+            border-color: var(--accent-primary);
+        }
+
+        .ticket .ticket-actions .edit-btn:hover {
+            color: var(--accent-primary);
+            border-color: var(--accent-primary);
+        }
+
+        .ticket .ticket-actions .delete-btn:hover {
+            color: #f87171;
+            border-color: rgba(248, 113, 113, 0.3);
+        }
+
+        .ticket.own .ticket-actions {
+            flex-direction: row-reverse;
+        }
+
+        /* Системные сообщения */
+        .ticket.system {
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 12px;
+            margin: 8px 0;
+        }
+
+        .ticket.system .ticket-card {
+            background: transparent;
+            border: none;
+            box-shadow: none;
+            padding: 4px 12px;
+            max-width: 100%;
+        }
+
+        .ticket.system .ticket-body {
+            color: var(--text-muted);
+            font-size: 12px;
+            text-align: center;
+        }
+
+        /* Chat Input - создание новой заявки */
+        .chat-input {
+            padding: 12px 20px;
+            background: var(--bg-secondary);
+            border-top: 1px solid var(--border-color);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            flex-shrink: 0;
+            min-height: 100px;
+            height: auto;
+            max-height: 250px;
+        }
+
+        .chat-input .input-row {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }
+
+        .chat-input .input-wrapper {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 8px 10px;
+            transition: all 0.3s;
+            min-width: 0;
+            min-height: 44px;
+            max-height: 180px;
+        }
+
+        .chat-input .input-wrapper:focus-within {
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+
+        .chat-input .input-wrapper .input-textarea-wrapper {
+            position: relative;
+            flex: 1;
+        }
+
+        .chat-input .input-wrapper textarea {
+            width: 100%;
+            padding: 4px 0;
+            background: transparent;
+            border: none;
+            font-size: 13px;
+            color: var(--text-primary);
+            outline: none;
+            resize: none;
+            font-family: inherit;
+            line-height: 1.6;
+            min-height: 24px;
+            max-height: 120px;
+            overflow-y: auto;
+            scrollbar-width: thin;
+        }
+
+        .chat-input .input-wrapper textarea::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        .chat-input .input-wrapper textarea::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .chat-input .input-wrapper textarea::-webkit-scrollbar-thumb {
+            background: var(--scrollbar-thumb);
+            border-radius: 2px;
+        }
+
+        .chat-input .input-wrapper textarea::placeholder {
+            color: var(--text-muted);
+        }
+
+        .chat-input .input-wrapper textarea:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .chat-input .input-wrapper .input-tools {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding-top: 4px;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .chat-input .input-wrapper .input-tools button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+            color: var(--text-secondary);
+            padding: 2px 6px;
+            transition: all 0.2s;
+            border-radius: 4px;
+            height: 28px;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .chat-input .input-wrapper .input-tools button:hover {
+            color: var(--text-primary);
+            background: var(--bg-hover);
+        }
+
+        .chat-input .input-wrapper .input-tools .emoji-btn:hover {
+            color: var(--accent-primary);
+        }
+
+        .chat-input .input-wrapper .input-tools .image-btn:hover {
+            color: #4ade80;
+        }
+
+        .chat-input .input-wrapper .input-tools .char-count {
+            font-size: 10px;
+            color: var(--text-muted);
+            margin-left: auto;
+            user-select: none;
+        }
+
+        .chat-input .input-wrapper .image-preview-container {
+            display: none;
+            flex-wrap: wrap;
+            gap: 6px;
+            padding: 4px 0;
+        }
+
+        .chat-input .input-wrapper .image-preview-container.show {
+            display: flex;
+        }
+
+        .chat-input .input-wrapper .image-preview-container .preview-item {
+            position: relative;
+            width: 60px;
+            height: 60px;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+        }
+
+        .chat-input .input-wrapper .image-preview-container .preview-item img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .chat-input .input-wrapper .image-preview-container .preview-item .remove-image {
+            position: absolute;
+            top: 2px;
+            right: 2px;
+            background: rgba(0,0,0,0.7);
+            border: none;
+            color: white;
+            cursor: pointer;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            font-size: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+        }
+
+        .chat-input .input-wrapper .image-preview-container .preview-item .remove-image:hover {
+            background: #e74c3c;
+        }
+
+        .chat-input .action-buttons {
+            display: flex;
+            gap: 8px;
+            flex-shrink: 0;
+            align-items: center;
+        }
+
+        .chat-input .action-buttons button {
+            padding: 10px 20px;
+            background: var(--accent-primary);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: all 0.3s;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            height: 40px;
+            font-size: 13px;
+            flex-shrink: 0;
+        }
+
+        .chat-input .action-buttons button:hover:not(:disabled) {
+            background: var(--accent-hover);
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px var(--accent-glow);
+        }
+
+        .chat-input .action-buttons button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .chat-input .action-buttons .edit-cancel {
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            display: none;
+        }
+
+        .chat-input .action-buttons .edit-cancel:hover:not(:disabled) {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+            transform: none;
+            box-shadow: none;
+        }
+
+        .chat-input.editing .action-buttons .edit-cancel {
+            display: block;
+        }
+
+        .chat-input.editing .action-buttons .send-btn {
+            background: #f59f00;
+        }
+
+        .chat-input.editing .action-buttons .send-btn:hover:not(:disabled) {
+            background: #f08c00;
+        }
+
+        /* Reply indicator */
+        .chat-input .reply-indicator {
+            display: none !important;
+            background: var(--reply-bg);
+            border-left: 3px solid var(--accent-primary);
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+            order: -1;
+        }
+
+        .chat-input .reply-indicator.show {
+            display: flex !important;
+        }
+
+        .chat-input .reply-indicator .reply-text {
+            flex: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: var(--text-muted);
+        }
+
+        .chat-input .reply-indicator .reply-author {
+            color: var(--accent-primary);
+            font-weight: 600;
+        }
+
+        .chat-input .reply-indicator .reply-cancel {
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: var(--text-muted);
+            padding: 2px 6px;
+            font-size: 14px;
+            height: auto;
+            line-height: 1;
+            transition: color 0.2s;
+        }
+
+        .chat-input .reply-indicator .reply-cancel:hover {
+            color: #f87171;
+            transform: none;
+            box-shadow: none;
+        }
+
+        /* Emoji Picker */
+        .emoji-picker-container {
+            display: none;
+            position: absolute;
+            bottom: 160px;
+            right: 20px;
+            z-index: 1000;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+            max-height: 300px;
+            overflow-y: auto;
+            padding: 8px;
+        }
+
+        .emoji-picker-container.show { display: block; }
+
+        .emoji-picker-container .emoji-grid {
+            display: grid;
+            grid-template-columns: repeat(6, 1fr);
+            gap: 4px;
+        }
+
+        .emoji-picker-container .emoji-item {
+            font-size: 24px;
+            cursor: pointer;
+            padding: 4px;
+            border-radius: 6px;
+            text-align: center;
+            transition: all 0.2s;
+        }
+
+        .emoji-picker-container .emoji-item:hover {
+            background: var(--bg-hover);
+            transform: scale(1.2);
+        }
+
+        /* Image Modal */
+        .image-modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            z-index: 9999;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        .image-modal.show { display: flex; }
+
+        .image-modal img {
+            max-width: 90%;
+            max-height: 90%;
+            border-radius: 8px;
+            object-fit: contain;
+        }
+
+        /* Notification */
+        .notification-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            max-width: 350px;
+            width: 100%;
+        }
+
+        .notification {
+            background: var(--notification-bg);
+            border: 1px solid var(--notification-border);
+            border-radius: 12px;
+            padding: 12px 16px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+            animation: slideInRight 0.3s ease;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+        }
+
+        .notification .notif-icon {
+            font-size: 18px;
+            flex-shrink: 0;
+            margin-top: 2px;
+        }
+
+        .notification .notif-content {
+            flex: 1;
+        }
+
+        .notification .notif-content .notif-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .notification .notif-content .notif-text {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+
+        .notification .notif-close {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 14px;
+            padding: 2px;
+            flex-shrink: 0;
+        }
+
+        .notification .notif-close:hover { color: var(--text-primary); }
+
+        @keyframes slideInRight {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        /* Scrollbars */
+        .chat-messages::-webkit-scrollbar,
+        .users-list::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        .chat-messages::-webkit-scrollbar-track,
+        .users-list::-webkit-scrollbar-track {
+            background: var(--scrollbar-track);
+        }
+
+        .chat-messages::-webkit-scrollbar-thumb,
+        .users-list::-webkit-scrollbar-thumb {
+            background: var(--scrollbar-thumb);
+            border-radius: 2px;
+        }
+
+        .chat-messages::-webkit-scrollbar-thumb:hover,
+        .users-list::-webkit-scrollbar-thumb:hover {
+            background: var(--scrollbar-thumb-hover);
+        }
+
+        /* ===== МОБИЛЬНАЯ ВЕРСИЯ ===== */
+        @media (max-width: 768px) {
+            body { padding: 0; align-items: stretch; }
+            
+            .chat-container {
+                max-height: 100vh;
+                height: 100vh;
+                border-radius: 0;
+                flex-direction: column;
+            }
+
+            .sidebar {
+                width: 100%;
+                min-width: 100%;
+                height: auto;
+                max-height: 130px;
+                border-right: none;
+                border-bottom: 1px solid var(--border-color);
+                flex-shrink: 0;
+            }
+
+            .sidebar-header {
+                padding: 10px 16px 8px;
+                min-height: 56px;
+            }
+
+            .sidebar-header .logo i { font-size: 18px; }
+            .sidebar-header .logo h2 { font-size: 15px; }
+            .sidebar-header .online-count { font-size: 11px; }
+
+            .users-list {
+                display: flex;
+                flex-wrap: nowrap;
+                gap: 4px;
+                padding: 6px 12px 10px;
+                overflow-x: auto;
+                overflow-y: hidden;
+                align-content: flex-start;
+                -webkit-overflow-scrolling: touch;
+                max-height: 60px;
+            }
+
+            .user-item {
+                padding: 4px 10px;
+                font-size: 12px;
+                white-space: nowrap;
+                flex: 0 0 auto;
+                height: 36px;
+                min-height: 36px;
+                margin-bottom: 0;
+            }
+
+            .user-item .avatar {
+                width: 24px;
+                height: 24px;
+                min-width: 24px;
+                min-height: 24px;
+                font-size: 11px;
+            }
+
+            .user-item .username { font-size: 12px; }
+            .user-item .status-dot { width: 6px; height: 6px; }
+
+            .main-chat { height: 100%; min-height: 0; }
+
+            .chat-header {
+                padding: 8px 16px;
+                min-height: 48px;
+                height: 48px;
+            }
+
+            .chat-header .header-left .room-info .room-name { font-size: 14px; }
+            .chat-header .header-left .room-info .room-status { font-size: 10px; }
+            
+            .chat-header .header-actions button {
+                padding: 4px 10px;
+                font-size: 11px;
+                height: 30px;
+            }
+            .chat-header .header-actions button span { display: none; }
+
+            .username-container {
+                padding: 8px 16px;
+                min-height: 50px;
+                height: 50px;
+                gap: 8px;
+            }
+
+            .username-container input {
+                padding: 6px 12px;
+                font-size: 13px;
+                height: 32px;
+            }
+
+            .username-container button {
+                padding: 6px 14px;
+                font-size: 12px;
+                height: 32px;
+            }
+
+            .chat-messages { padding: 12px 14px; }
+
+            .ticket .ticket-card {
+                max-width: 92%;
+                padding: 12px 14px;
+            }
+
+            .ticket .ticket-header .ticket-author { font-size: 12px; }
+            .ticket .ticket-body { font-size: 13px; }
+            .ticket .ticket-images .ticket-image { max-width: 150px; max-height: 150px; }
+
+            .ticket .ticket-actions {
+                display: flex;
+                opacity: 0.6;
+            }
+
+            .ticket .ticket-actions button {
+                padding: 3px 8px;
+                font-size: 10px;
+                height: 26px;
+            }
+
+            .chat-input {
+                padding: 8px 16px;
+                min-height: 80px;
+                max-height: 180px;
+                gap: 6px;
+            }
+
+            .chat-input .input-wrapper {
+                min-height: 38px;
+                max-height: 130px;
+                padding: 6px 10px;
+            }
+
+            .chat-input .input-wrapper textarea {
+                font-size: 14px;
+                min-height: 20px;
+                max-height: 80px;
+            }
+
+            .chat-input .input-wrapper .input-tools button {
+                font-size: 14px;
+                height: 24px;
+            }
+
+            .chat-input .action-buttons button {
+                padding: 8px 14px;
+                font-size: 12px;
+                height: 36px;
+            }
+
+            .chat-input .action-buttons .edit-cancel {
+                padding: 8px 12px;
+                font-size: 12px;
+                height: 36px;
+            }
+
+            .chat-input .input-wrapper .image-preview-container .preview-item {
+                width: 50px;
+                height: 50px;
+            }
+
+            .emoji-picker-container {
+                bottom: 140px;
+                right: 10px;
+                max-height: 200px;
+            }
+
+            .emoji-picker-container .emoji-grid {
+                grid-template-columns: repeat(5, 1fr);
+            }
+
+            .notification-container {
+                top: 10px;
+                right: 10px;
+                max-width: 280px;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .sidebar { max-height: 110px; }
+            .sidebar-header { padding: 8px 12px 6px; min-height: 48px; }
+            .sidebar-header .logo i { font-size: 16px; }
+            .sidebar-header .logo h2 { font-size: 13px; }
+            .sidebar-header .online-count { font-size: 10px; }
+            
+            .users-list { 
+                padding: 4px 10px 8px; 
+                max-height: 48px;
+                gap: 3px;
+            }
+            .user-item { 
+                padding: 3px 8px; 
+                height: 30px;
+                min-height: 30px;
+                gap: 6px;
+            }
+            .user-item .avatar { 
+                width: 20px; 
+                height: 20px; 
+                min-width: 20px;
+                min-height: 20px;
+                font-size: 9px; 
+            }
+            .user-item .username { font-size: 11px; }
+            .user-item .status-dot { width: 5px; height: 5px; }
+
+            .chat-header { padding: 6px 12px; min-height: 42px; height: 42px; }
+            .chat-header .header-left .room-info .room-name { font-size: 13px; }
+            
+            .username-container { 
+                padding: 6px 12px; 
+                min-height: 44px;
+                height: 44px;
+            }
+            .username-container input { 
+                padding: 4px 10px; 
+                font-size: 12px; 
+                height: 28px;
+            }
+            .username-container button { 
+                padding: 4px 12px; 
+                font-size: 11px; 
+                height: 28px;
+            }
+
+            .chat-messages { padding: 10px 12px; }
+            
+            .ticket .ticket-card {
+                max-width: 95%;
+                padding: 10px 12px;
+            }
+
+            .ticket .ticket-body { font-size: 12px; }
+            .ticket .ticket-images .ticket-image { max-width: 120px; max-height: 120px; }
+            .ticket .ticket-header .ticket-author { font-size: 11px; }
+            .ticket .ticket-header .ticket-avatar { width: 22px; height: 22px; font-size: 10px; }
+
+            .chat-input { 
+                padding: 6px 12px; 
+                min-height: 70px;
+                max-height: 150px;
+                gap: 4px;
+            }
+
+            .chat-input .input-wrapper {
+                min-height: 34px;
+                max-height: 100px;
+                padding: 4px 8px;
+            }
+
+            .chat-input .input-wrapper textarea { 
+                font-size: 13px; 
+                min-height: 18px;
+                max-height: 60px;
+            }
+
+            .chat-input .input-wrapper .input-tools button {
+                font-size: 13px;
+                height: 22px;
+                padding: 0 4px;
+            }
+
+            .chat-input .action-buttons button { 
+                padding: 6px 12px; 
+                font-size: 11px; 
+                height: 32px;
+            }
+
+            .chat-input .action-buttons .edit-cancel { 
+                padding: 6px 10px; 
+                font-size: 11px; 
+                height: 32px;
+            }
+
+            .chat-input .input-wrapper .image-preview-container .preview-item {
+                width: 40px;
+                height: 40px;
+            }
+
+            .emoji-picker-container .emoji-item { font-size: 20px; }
+        }
+
+        @media (max-height: 600px) {
+            .sidebar { max-height: 90px; }
+            .sidebar-header { padding: 6px 12px 4px; min-height: 40px; }
+            .users-list { max-height: 36px; padding: 2px 10px 4px; }
+            .user-item { height: 26px; min-height: 26px; padding: 2px 8px; }
+            .user-item .avatar { width: 18px; height: 18px; min-width: 18px; min-height: 18px; font-size: 8px; }
+            
+            .chat-header { min-height: 36px; height: 36px; padding: 4px 12px; }
+            .username-container { min-height: 36px; height: 36px; padding: 4px 12px; }
+            .username-container input { height: 24px; font-size: 11px; }
+            .username-container button { height: 24px; font-size: 10px; padding: 2px 10px; }
+            
+            .chat-input { 
+                min-height: 60px; 
+                padding: 4px 12px; 
+                gap: 4px;
+                max-height: 120px;
+            }
+            .chat-input .input-wrapper { 
+                min-height: 30px;
+                max-height: 80px;
+                padding: 4px 8px; 
+            }
+            .chat-input .input-wrapper textarea { 
+                min-height: 16px;
+                max-height: 50px;
+                font-size: 12px; 
+            }
+            .chat-input .action-buttons button { 
+                height: 28px; 
+                font-size: 10px; 
+                padding: 4px 10px; 
+            }
+            .chat-input .action-buttons .edit-cancel { 
+                height: 28px; 
+                font-size: 10px; 
+                padding: 4px 8px; 
+            }
+            .chat-input .input-wrapper .input-tools button {
+                font-size: 12px;
+                height: 20px;
+            }
+            
+            .chat-messages { padding: 8px 12px; }
+            .ticket .ticket-card { padding: 8px 10px; }
+            .ticket .ticket-body { font-size: 11px; }
+            .ticket .ticket-images .ticket-image { max-width: 100px; max-height: 100px; }
+            .ticket .ticket-header .ticket-author { font-size: 10px; }
+            .ticket .ticket-header .ticket-avatar { width: 18px; height: 18px; font-size: 8px; }
+        }
+/* ============================================================
+   ATTACHMENTS
+   ============================================================ */
+.ticket-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.attachment-item {
+    cursor: pointer;
+    transition: all 0.2s;
+    border-radius: 8px;
+    border: 1px solid var(--border-color);
+    overflow: hidden;
+    max-width: 200px;
+}
+
+.attachment-item:hover {
+    transform: scale(1.02);
+    border-color: var(--accent-primary);
+}
+
+.attachment-item .ticket-image {
+    width: 100%;
+    height: auto;
+    max-height: 200px;
+    object-fit: cover;
+    display: block;
+}
+
+.attachment-item .file-attachment {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: var(--bg-tertiary);
+    min-width: 150px;
+    max-width: 200px;
+}
+
+.attachment-item .file-attachment .file-icon {
+    font-size: 24px;
+    flex-shrink: 0;
+}
+
+.attachment-item .file-attachment .file-name {
+    font-size: 12px;
+    color: var(--text-primary);
+    flex: 1;
+    word-break: break-word;
+}
+
+.attachment-item .file-attachment .file-size {
+    font-size: 10px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+}
+
+/* Attachment preview in input */
+.attachment-preview-container {
+    display: none;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 4px 0;
+}
+
+.attachment-preview-container.show {
+    display: flex;
+}
+
+.attachment-preview-container .preview-item {
+    position: relative;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+    background: var(--bg-tertiary);
+    min-width: 60px;
+    max-width: 120px;
+}
+
+.attachment-preview-container .preview-item img {
+    width: 100%;
+    height: 60px;
+    object-fit: cover;
+    display: block;
+}
+
+.attachment-preview-container .preview-item .file-preview {
+    padding: 6px 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 80px;
+}
+
+.attachment-preview-container .preview-item .file-preview .file-icon {
+    font-size: 20px;
+    flex-shrink: 0;
+}
+
+.attachment-preview-container .preview-item .file-preview .file-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.attachment-preview-container .preview-item .file-preview .file-name {
+    font-size: 10px;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.attachment-preview-container .preview-item .file-preview .file-size {
+    font-size: 9px;
+    color: var(--text-muted);
+}
+
+.attachment-preview-container .preview-item .remove-attachment {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    background: rgba(0,0,0,0.7);
+    border: none;
+    color: white;
+    cursor: pointer;
+    border-radius: 50%;
+    width: 18px;
+    height: 18px;
+    font-size: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    z-index: 1;
+}
+
+.attachment-preview-container .preview-item .remove-attachment:hover {
+    background: #e74c3c;
+}
+
+/* ============================================================
+   READ STATUS
+   ============================================================ */
+.read-status {
+    font-size: 10px;
+    margin-left: 4px;
+    padding: 2px 4px;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+
+.read-status.read {
+    color: #4ade80;
+}
+
+.read-status.unread {
+    color: var(--text-muted);
+}
+
+/* Mobile styles for attachments */
+@media (max-width: 768px) {
+    .attachment-item {
+        max-width: 150px;
+    }
+    .attachment-item .ticket-image {
+        max-height: 150px;
+    }
+    .attachment-item .file-attachment {
+        min-width: 100px;
+        max-width: 150px;
+        padding: 6px 10px;
+    }
+    .attachment-item .file-attachment .file-name {
+        font-size: 11px;
+    }
+    .attachment-preview-container .preview-item {
+        max-width: 80px;
+    }
+    .attachment-preview-container .preview-item img {
+        height: 50px;
+    }
+    .attachment-preview-container .preview-item .file-preview {
+        min-width: 60px;
+        padding: 4px 6px;
+    }
+}
+
+@media (max-width: 480px) {
+    .attachment-item {
+        max-width: 120px;
+    }
+    .attachment-item .ticket-image {
+        max-height: 120px;
+    }
+    .attachment-item .file-attachment {
+        min-width: 80px;
+        max-width: 120px;
+        padding: 4px 8px;
+    }
+    .attachment-item .file-attachment .file-name {
+        font-size: 10px;
+    }
+    .attachment-preview-container .preview-item {
+        max-width: 60px;
+    }
+    .attachment-preview-container .preview-item img {
+        height: 40px;
+    }
+    .attachment-preview-container .preview-item .file-preview {
+        min-width: 50px;
+        padding: 3px 4px;
+    }
+
+}
+
+/* ============================================================
+   DATE SEPARATOR (текущая дата в окне чата)
+   ============================================================ */
+.date-separator {
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin: 16px 0 12px;
+    padding: 4px 12px;
+    position: relative;
+    text-transform: capitalize;
+    letter-spacing: 0.3px;
+    user-select: none;
+}
+
+.date-separator::before,
+.date-separator::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    width: calc(50% - 90px);
+    height: 1px;
+    background: var(--border-color);
+}
+
+.date-separator::before { left: 12px; }
+.date-separator::after  { right: 12px; }
+
+/* ============================================================
+   TICKET TIME (мелкий шрифт, дата и время)
+   ============================================================ */
+.ticket .ticket-header .ticket-time {
+    font-size: 9px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+    white-space: nowrap;
+    opacity: 0.75;
+    font-weight: 400;
+    letter-spacing: 0.2px;
+}
+
+/* ============================================================
+   COMPLETE BUTTON (зелёная галочка)
+   ============================================================ */
+.ticket .ticket-actions .complete-btn {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    cursor: pointer;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    border-radius: 6px;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.ticket .ticket-actions .complete-btn:hover {
+    color: #4ade80;
+    border-color: rgba(74, 222, 128, 0.4);
+    background: rgba(74, 222, 128, 0.08);
+}
+
+.ticket .ticket-actions .complete-btn.active {
+    color: #4ade80;
+    border-color: rgba(74, 222, 128, 0.6);
+    background: rgba(74, 222, 128, 0.12);
+    font-weight: 600;
+    box-shadow: 0 0 0 2px rgba(74, 222, 128, 0.1);
+}
+
+.ticket .ticket-actions .complete-btn.active i {
+    animation: checkPop 0.3s ease;
+}
+
+@keyframes checkPop {
+    0%   { transform: scale(0.6); }
+    60%  { transform: scale(1.25); }
+    100% { transform: scale(1); }
+}
+
+/* ============================================================
+   COMPLETED TICKET (визуальное выделение выполненных)
+   ============================================================ */
+.ticket.completed .ticket-card {
+    opacity: 0.72;
+    border-color: rgba(74, 222, 128, 0.35) !important;
+}
+
+.ticket.completed .ticket-card:hover {
+    opacity: 0.9;
+    border-color: rgba(74, 222, 128, 0.6) !important;
+    box-shadow: 0 4px 16px rgba(74, 222, 128, 0.12) !important;
+}
+
+.ticket.completed .ticket-body {
+    text-decoration: line-through;
+    text-decoration-color: rgba(74, 222, 128, 0.4);
+    text-decoration-thickness: 1px;
+}
+
+.ticket.completed .ticket-header .ticket-author {
+    color: var(--text-secondary);
+}
+
+.ticket.completed .ticket-header .completed-badge {
+    font-size: 14px;
+    filter: drop-shadow(0 0 4px rgba(74, 222, 128, 0.5));
+    animation: checkPop 0.3s ease;
+}
+
+/* Мобильная адаптация */
+@media (max-width: 768px) {
+    .ticket .ticket-actions .complete-btn {
+        padding: 3px 8px;
+        font-size: 10px;
+        height: 26px;
+    }
+    .ticket .ticket-header .ticket-time {
+        font-size: 8px;
+    }
+    .date-separator {
+        font-size: 10px;
+        margin: 12px 0 8px;
+    }
+    .date-separator::before,
+    .date-separator::after {
+        width: calc(50% - 70px);
+    }
+}
+
+@media (max-width: 480px) {
+    .ticket .ticket-header .ticket-time {
+        font-size: 8px;
+        max-width: 70px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .date-separator {
+        font-size: 9px;
+    }
+}

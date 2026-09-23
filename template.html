@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>LAN party - воткнись в сеть</title>
+    <!-- Favicon — штепсель (inline SVG) -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🔌</text></svg>">
+    <link href="./style.css" rel="stylesheet">
+</head>
+<body>
+    <div class="chat-container">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    🖥️
+                    <h2>LAN Party</h2>
+                </div>
+                <div class="online-count">
+                    <span class="dot"></span>
+                    <span id="onlineCount">0 пользователей онлайн</span>
+                </div>
+            </div>
+            <div class="users-list" id="usersList"></div>
+        </div>
+
+        <!-- Main Chat -->
+        <div class="main-chat">
+            <div class="chat-header">
+                <div class="header-left">
+                    <div class="room-info">
+                        <span class="room-name">📢 Дискорд для бедных</span>
+                        <span class="room-status" id="chatInfo">Привет</span>
+                    </div>
+                </div>
+                <div class="header-actions">
+                    <button class="logout-btn" id="logoutBtn" style="display:none;">
+                        🚪
+                        <span>Выйти</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Username Input -->
+            <div class="username-container" id="usernameContainer">
+                <label for="usernameInput">👤</label>
+                <input type="text" id="usernameInput" placeholder="Введите ваше имя..." maxlength="20">
+                <button id="setUsernameBtn">➡️ Войти</button>
+            </div>
+
+            <!-- Messages -->
+            <div class="chat-messages" id="chatMessages"></div>
+
+            <!-- Chat Input -->
+            <div class="chat-input" id="chatInput">
+                <!-- Reply indicator -->
+                <div class="reply-indicator" id="replyIndicator">
+                    <span>↩️ Ответ на <span class="reply-author" id="replyAuthor"></span>:</span>
+                    <span class="reply-text" id="replyText"></span>
+                    <button class="reply-cancel" id="replyCancelBtn">✕</button>
+                </div>
+                
+                <div class="input-row">
+                    <div class="input-wrapper" id="inputWrapper">
+                        <div class="input-textarea-wrapper">
+                            <textarea id="messageInput" placeholder="Опишите ваш вопрос или проблему..." disabled rows="2"></textarea>
+                        </div>
+                        <div class="attachment-preview-container" id="attachmentPreviewContainer"></div>
+                        <div class="input-tools">
+                            <button class="emoji-btn" id="emojiBtn" title="Смайлы">😊</button>
+                            <button class="file-btn" id="fileBtn" title="Прикрепить файл">📎</button>
+                            <input type="file" id="fileInput" multiple style="display:none">
+                            <span class="char-count" id="charCount">0</span>
+                        </div>
+                    </div>
+                    <div class="action-buttons">
+                        <button class="edit-cancel" id="cancelEditBtn">✖ Отмена</button>
+                        <button class="send-btn" id="sendBtn" disabled>🚀 Отправить</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Emoji Picker -->
+    <div class="emoji-picker-container" id="emojiPicker">
+        <div class="emoji-grid" id="emojiGrid"></div>
+    </div>
+
+    <!-- Image Modal -->
+    <div class="image-modal" id="imageModal" onclick="closeImageModal()">
+        <img id="modalImage" src="" alt="Просмотр изображения">
+    </div>
+
+    <!-- Notification Container -->
+    <div class="notification-container" id="notificationContainer"></div>
+
+    <script src="./main.js"></script>
+</body>
+</html>
