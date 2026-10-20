@@ -1,12 +1,12 @@
 import os
 import socketserver
 import socket
-from message_handler import ChatHandler
+import threading
+import time
+from message_handler import ChatHandler, cleanup_expired_sessions
 
 
-# Автоматический поиск свободного порта
-def find_free_port(start_port=5000, max_port=5100):
-    """Находит свободный порт в диапазоне"""
+def find_free_port(start_port=5555, max_port=5555):
     for port in range(start_port, max_port):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -17,43 +17,48 @@ def find_free_port(start_port=5000, max_port=5100):
     return start_port
 
 
-# В Docker — PORT из окружения, локально — автопоиск
+class ThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+
+
+def cleanup_loop():
+    while True:
+        time.sleep(3600)
+        try:
+            cleanup_expired_sessions()
+        except Exception:
+            pass
+
+
 PORT = int(os.environ.get('PORT', 0))
 if not PORT:
     PORT = find_free_port()
+
 print(f"🔍 Используется порт: {PORT}")
 
 
 def run_server():
-    """Запуск сервера"""
     print("=" * 50)
     print("🚀 Тикет-система запущена!")
-    print(f"📱 Откройте в браузере: http://localhost:{PORT}")
+    print(f"📱 http://localhost:{PORT}")
     print("=" * 50)
-    print("🎨 Дизайн: Карточки заявок")
-    print("💡 Особенности:")
-    print("  📝 Многострочный текст (Shift+Enter)")
-    print("  🖼️ Вставка скриншотов (Ctrl+V или 📎)")
-    print("  📋 Каждое сообщение - отдельная заявка")
-    print("  🔔 Всплывающие уведомления")
-    print("  ✏️ Редактирование заявок")
-    print("  🗑️ Удаление заявок")
-    print("  ↩️ Ответы на заявки")
-    print("  😊 Смайлы")
-    print("=" * 50)
-    print("Нажмите Ctrl+C для остановки")
+    print("🔒 Вход по паролю (регистрация + логин)")
+    print("🛡️ Rate limit, сессии, WAL, индексы")
+    print("⚡ Кэширование сообщений/юзеров/read-counts")
     print("=" * 50)
 
+    threading.Thread(target=cleanup_loop, daemon=True).start()
+
     try:
-        with socketserver.TCPServer(("", PORT), ChatHandler) as httpd:
+        with ThreadingHTTPServer(("127.0.0.1", PORT), ChatHandler) as httpd:
             httpd.serve_forever()
     except OSError as e:
-        if "10048" in str(e):
-            print(f"\n❌ Порт {PORT} занят. Ищем другой порт...")
+        if "10048" in str(e) or "Address already in use" in str(e):
             new_port = find_free_port(PORT + 1)
-            print(f"🔄 Используем порт {new_port}")
-            with socketserver.TCPServer(("", new_port), ChatHandler) as httpd:
-                print(f"✅ Сервер запущен на http://localhost:{new_port}")
+            print(f"🔄 Порт {PORT} занят, используем {new_port}")
+            with ThreadingHTTPServer(("", new_port), ChatHandler) as httpd:
+                print(f"✅ http://localhost:{new_port}")
                 httpd.serve_forever()
         else:
             raise
