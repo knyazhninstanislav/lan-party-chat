@@ -11,7 +11,7 @@ import threading
 import re
 import gzip
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, quote
 from collections import defaultdict, deque
 
 # ============================================================
@@ -26,6 +26,18 @@ MAX_USERNAME_LEN = 20
 MAX_ATTACHMENTS = 5
 MAX_FILE_SIZE = 10 * 1024 * 1024
 MESSAGES_LIMIT = 100
+
+# Вложения хранятся файлами на диске (по умолчанию — папка uploads рядом с БД)
+UPLOAD_DIR = os.environ.get('UPLOAD_DIR') or os.path.join(
+    os.path.dirname(os.path.abspath(DB_PATH)) or '.', 'uploads')
+
+# Типы, которые безопасно отдавать inline (просмотр в браузере)
+INLINE_SAFE_TYPES = {
+    'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp',
+    'image/x-icon', 'image/avif',
+    'video/mp4', 'video/webm', 'audio/mpeg', 'audio/ogg', 'audio/wav',
+    'audio/x-wav', 'audio/webm',
+}
 
 LOGIN_MAX_ATTEMPTS = 5
 LOGIN_WINDOW = 15 * 60
@@ -45,6 +57,44 @@ def get_db():
 def _table_columns(cur, table):
     cur.execute(f'PRAGMA table_info({table})')
     return {r[1] for r in cur.fetchall()}
+
+
+# ------------------------------------------------------------
+# ФАЙЛЫ ВЛОЖЕНИЙ
+# ------------------------------------------------------------
+def generate_storage_name(filename: str) -> str:
+    """Случайное имя файла на диске; расширение сохраняем, если оно безопасное."""
+    ext = os.path.splitext(filename or '')[1].lower()
+    if not re.fullmatch(r'\.[a-z0-9]{1,10}', ext):
+        ext = ''
+    return secrets.token_hex(16) + ext
+
+
+def attachment_disk_path(storage_name: str) -> str:
+    # storage_name генерируем сами (hex+ext), но на всякий случай режем путь
+    return os.path.join(UPLOAD_DIR, os.path.basename(storage_name or ''))
+
+
+def unlink_attachment(storage_name: str):
+    if not storage_name:
+        return
+    try:
+        os.remove(attachment_disk_path(storage_name))
+    except OSError:
+        pass
+
+
+def content_disposition(filename: str, disposition: str) -> str:
+    """RFC 6266/5987: ASCII-фолбэк + filename* в UTF-8 (кириллица и т.п.)."""
+    filename = filename or 'file'
+    ascii_name = re.sub(r'[^A-Za-z0-9._ -]', '_', filename).strip()[:150] or 'file'
+    return (f'{disposition}; filename="{ascii_name}"; '
+            f"filename*=UTF-8''{quote(filename, safe='')}")
+
+
+def safe_attachment_type(file_type: str) -> str:
+    file_type = (file_type or '').lower().strip()
+    return file_type if file_type in INLINE_SAFE_TYPES else 'application/octet-stream'
 
 
 def init_db():
@@ -137,19 +187,71 @@ def init_db():
         except sqlite3.OperationalError:
             pass
 
-    # ---- attachments ----
+    # ---- recipient_id (личные сообщения) ----
+    try:
+        cur.execute("SELECT recipient_id FROM messages LIMIT 1")
+    except sqlite3.OperationalError:
+        try:
+            cur.execute("ALTER TABLE messages ADD COLUMN recipient_id TEXT")
+        except sqlite3.OperationalError:
+            pass
+
+    # ---- attachments (файлы на диске, в БД только метаданные) ----
     cur.execute('''
         CREATE TABLE IF NOT EXISTS attachments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             message_id TEXT NOT NULL,
             filename TEXT NOT NULL,
-            file_data TEXT NOT NULL,
+            storage_name TEXT NOT NULL,
             file_type TEXT NOT NULL,
             file_size INTEGER NOT NULL,
             created_at REAL DEFAULT (strftime('%s','now')),
             FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
         )
     ''')
+
+    # миграция старой схемы: base64 в колонке file_data → файлы в UPLOAD_DIR
+    if 'file_data' in _table_columns(cur, 'attachments'):
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
+        cur.execute('ALTER TABLE attachments RENAME TO attachments_legacy')
+        cur.execute('''
+            CREATE TABLE attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                storage_name TEXT NOT NULL,
+                file_type TEXT NOT NULL,
+                file_size INTEGER NOT NULL,
+                created_at REAL DEFAULT (strftime('%s','now')),
+                FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
+            )
+        ''')
+        legacy = cur.execute(
+            'SELECT id, message_id, filename, file_data, file_type, created_at '
+            'FROM attachments_legacy').fetchall()
+        for r in legacy:
+            try:
+                data = base64.b64decode(r['file_data'] or '', validate=False)
+            except Exception:
+                data = b''
+            if not data:
+                continue
+            storage = generate_storage_name(r['filename'])
+            try:
+                with open(attachment_disk_path(storage), 'wb') as fh:
+                    fh.write(data)
+            except OSError:
+                continue
+            cur.execute('''
+                INSERT INTO attachments
+                    (id, message_id, filename, storage_name, file_type, file_size, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (r['id'], r['message_id'], r['filename'], storage,
+                  r['file_type'] or 'application/octet-stream',
+                  len(data), r['created_at']))
+        cur.execute('DROP TABLE attachments_legacy')
+    else:
+        os.makedirs(UPLOAD_DIR, exist_ok=True)
 
     # ---- read_receipts ----
     cur.execute('''
@@ -176,6 +278,7 @@ def init_db():
     # ---- индексы ----
     cur.execute('CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at DESC)')
     cur.execute('CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id)')
+    cur.execute('CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_id)')
     cur.execute('CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id)')
     cur.execute('CREATE INDEX IF NOT EXISTS idx_read_receipts_msg ON read_receipts(message_id)')
     cur.execute('CREATE INDEX IF NOT EXISTS idx_users_last_seen ON users(last_seen DESC)')
@@ -205,8 +308,9 @@ READ_COUNTS_CACHE_TTL = 1.5
 _login_attempts_mem = defaultdict(deque)
 _login_attempts_lock = threading.Lock()
 
-_messages_cache = []
-_messages_cache_time = 0
+# кэш сообщений по диалогам: 'public' или 'dm:<id1>:<id2>'
+_messages_cache = {}
+_messages_cache_time = {}
 _messages_cache_lock = threading.Lock()
 MESSAGES_CACHE_TTL = 1.0
 
@@ -338,23 +442,37 @@ def cleanup_expired_sessions():
 # ============================================================
 # CACHE READERS
 # ============================================================
-def get_active_users(timeout: int = 15) -> list:
+def get_users_view(timeout: int = 15) -> dict:
+    """Все пользователи + признак «онлайн» и время последнего визита."""
     global _users_cache, _users_cache_time
     now = time.time()
     with _users_cache_lock:
-        if now - _users_cache_time < USERS_CACHE_TTL:
-            cached = list(_users_cache.values())
-        else:
+        if now - _users_cache_time >= USERS_CACHE_TTL:
             conn = get_db()
-            rows = conn.execute(
-                'SELECT user_id, username, last_seen FROM users WHERE last_seen > ?',
-                (now - timeout,)).fetchall()
+            rows = conn.execute('''
+                SELECT u.user_id, u.username, u.last_seen,
+                       EXISTS(SELECT 1 FROM sessions s
+                              WHERE s.user_id = u.user_id AND s.expires_at > ?) AS has_session
+                FROM users u
+            ''', (now,)).fetchall()
             conn.close()
             _users_cache = {r['user_id']: dict(r) for r in rows}
             _users_cache_time = now
-            cached = list(_users_cache.values())
-    return [{'username': u['username'], 'user_id': u['user_id']}
-            for u in cached if now - u['last_seen'] < timeout]
+        users = [dict(u) for u in _users_cache.values()]
+
+    result = []
+    for u in users:
+        last_seen = u.get('last_seen') or 0
+        result.append({
+            'user_id': u['user_id'],
+            'username': u['username'],
+            'online': bool(u.get('has_session')) and (now - last_seen) < timeout,
+            'last_seen': last_seen,
+        })
+    result.sort(key=lambda x: (not x['online'], -(x['last_seen'] or 0),
+                               x['username'].lower()))
+    return {'users': result,
+            'online': sum(1 for u in result if u['online'])}
 
 
 def invalidate_users_cache():
@@ -386,23 +504,34 @@ def invalidate_read_counts():
         _read_counts_cache_time = 0
 
 
-def load_messages(force: bool = False) -> list:
+def load_messages(convo: str = 'public', user_id: str = None,
+                  peer_id: str = None, force: bool = False) -> list:
+    """Сообщения одного диалога. convo — ключ кэша ('public' или 'dm:a:b')."""
     global _messages_cache, _messages_cache_time
     now = time.time()
     with _messages_cache_lock:
-        if not force and now - _messages_cache_time < MESSAGES_CACHE_TTL:
-            return _messages_cache
+        if not force and now - _messages_cache_time.get(convo, 0) < MESSAGES_CACHE_TTL:
+            return _messages_cache.get(convo, [])
 
         conn = get_db()
-        rows = conn.execute('''
+        if peer_id:
+            where = ('((user_id = ? AND recipient_id = ?) '
+                     'OR (user_id = ? AND recipient_id = ?))')
+            args = (user_id, peer_id, peer_id, user_id)
+        else:
+            where = 'recipient_id IS NULL'
+            args = ()
+
+        rows = conn.execute(f'''
             SELECT m.*,
                    (SELECT COUNT(DISTINCT rr.user_id) FROM read_receipts rr
                     WHERE rr.message_id = m.id) AS read_count,
-                   a.id AS att_id, a.filename, a.file_data, a.file_type, a.file_size
-            FROM (SELECT * FROM messages ORDER BY created_at DESC LIMIT ?) m
+                   a.id AS att_id, a.filename, a.file_type, a.file_size
+            FROM (SELECT *, rowid AS rid FROM messages WHERE {where}
+                  ORDER BY created_at DESC, rowid DESC LIMIT ?) m
             LEFT JOIN attachments a ON a.message_id = m.id
-            ORDER BY m.created_at ASC, a.id ASC
-        ''', (MESSAGES_LIMIT,)).fetchall()
+            ORDER BY m.created_at ASC, m.rid ASC, a.id ASC
+        ''', args + (MESSAGES_LIMIT,)).fetchall()
         conn.close()
 
         messages = {}
@@ -412,7 +541,9 @@ def load_messages(force: bool = False) -> list:
             if mid not in messages:
                 messages[mid] = {
                     'id': r['id'], 'username': r['username'], 'user_id': r['user_id'],
+                    'recipient_id': r['recipient_id'],
                     'message': r['message'], 'timestamp': r['timestamp'],
+                    'created_at': r['created_at'],
                     'edited': r['edited'], 'edit_time': r['edit_time'],
                     'reply_to': r['reply_to'], 'completed': r['completed'],
                     'read_count': r['read_count'], 'attachments': [],
@@ -421,18 +552,17 @@ def load_messages(force: bool = False) -> list:
             if r['att_id'] is not None:
                 messages[mid]['attachments'].append({
                     'id': r['att_id'], 'filename': r['filename'],
-                    'file_data': r['file_data'], 'file_type': r['file_type'],
-                    'file_size': r['file_size'],
+                    'file_type': r['file_type'], 'file_size': r['file_size'],
                 })
-        _messages_cache = [messages[mid] for mid in order]
-        _messages_cache_time = now
-        return _messages_cache
+        _messages_cache[convo] = [messages[mid] for mid in order]
+        _messages_cache_time[convo] = now
+        return _messages_cache[convo]
 
 
 def invalidate_messages():
     global _messages_cache_time
     with _messages_cache_lock:
-        _messages_cache_time = 0
+        _messages_cache_time = {}
 
 
 # ============================================================
@@ -530,7 +660,16 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             user = self._require_auth()
             if not user:
                 return
-            messages = load_messages()
+            qs = parse_qs(urlparse(self.path).query)
+            peer_id = (qs.get('with') or [''])[0] or None
+            if peer_id == user['user_id']:
+                self._json(400, {'error': 'Нельзя писать самому себе'})
+                return
+            if peer_id:
+                convo = 'dm:' + ':'.join(sorted([user['user_id'], peer_id]))
+                messages = load_messages(convo, user['user_id'], peer_id)
+            else:
+                messages = load_messages('public')
             sig = ','.join(f"{m['id']}:{m['read_count']}:{m['completed']}:{m['edited']}"
                            for m in messages)
             etag = '"' + hashlib.md5(sig.encode()).hexdigest() + '"'
@@ -542,11 +681,68 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self._json(200, messages, {'ETag': etag})
 
         elif path == '/api/users':
-            self._json(200, {'users': get_active_users()})
-
-        elif path.startswith('/api/attachment/'):
             user = self._require_auth()
             if not user:
+                return
+            self._json(200, get_users_view())
+
+        elif path == '/api/dm_threads':
+            user = self._require_auth()
+            if not user:
+                return
+            uid = user['user_id']
+            now = time.time()
+            conn = get_db()
+            rows = conn.execute('''
+                WITH dm AS (
+                    SELECT m.id, m.user_id, m.recipient_id, m.message, m.created_at,
+                           CASE WHEN m.user_id = ? THEN m.recipient_id ELSE m.user_id END AS peer_id
+                    FROM messages m
+                    WHERE m.recipient_id IS NOT NULL AND (m.user_id = ? OR m.recipient_id = ?)
+                ),
+                latest AS (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY peer_id ORDER BY created_at DESC, id DESC) AS rn
+                    FROM dm
+                )
+                SELECT l.peer_id, l.user_id AS last_sender_id, l.message, l.created_at,
+                       u.username AS peer_username, u.last_seen AS peer_last_seen,
+                       EXISTS(SELECT 1 FROM attachments a WHERE a.message_id = l.id) AS has_attachment,
+                       (SELECT COUNT(*) FROM messages m2
+                        LEFT JOIN read_receipts rr
+                               ON rr.message_id = m2.id AND rr.user_id = ?
+                        WHERE m2.user_id = l.peer_id AND m2.recipient_id = ?
+                          AND rr.message_id IS NULL) AS unread
+                FROM latest l
+                LEFT JOIN users u ON u.user_id = l.peer_id
+                WHERE l.rn = 1
+                ORDER BY l.created_at DESC
+            ''', (uid, uid, uid, uid, uid)).fetchall()
+            conn.close()
+            threads = []
+            for r in rows:
+                if r['peer_id'] is None:
+                    continue
+                last_seen = r['peer_last_seen'] or 0
+                threads.append({
+                    'peer_id': r['peer_id'],
+                    'peer_username': r['peer_username'] or 'Неизвестный',
+                    'peer_online': (now - last_seen) < 15,
+                    'last_sender_id': r['last_sender_id'],
+                    'message': r['message'] or '',
+                    'has_attachment': bool(r['has_attachment']),
+                    'last_at': r['created_at'] or 0,
+                    'unread': r['unread'] or 0,
+                })
+            self._json(200, {'threads': threads})
+
+        elif path.startswith('/api/attachment/'):
+            # токен можно передать в query — это нужно для <img src> и прямых ссылок
+            qs = parse_qs(urlparse(self.path).query)
+            qtoken = (qs.get('token') or [''])[0]
+            user = get_session_user(qtoken) if qtoken else get_session_user(extract_token(self))
+            if not user:
+                self._json(401, {'error': 'Не авторизован'})
                 return
             try:
                 file_id = int(path.rsplit('/', 1)[-1])
@@ -554,17 +750,34 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                 self._json(400, {'error': 'Неверный ID'})
                 return
             conn = get_db()
-            row = conn.execute(
-                'SELECT filename, file_data, file_type FROM attachments WHERE id = ?',
-                (file_id,)).fetchone()
+            row = conn.execute('''
+                SELECT a.filename, a.storage_name, a.file_type,
+                       m.user_id AS sender_id, m.recipient_id
+                FROM attachments a
+                LEFT JOIN messages m ON m.id = a.message_id
+                WHERE a.id = ?
+            ''', (file_id,)).fetchone()
             conn.close()
             if not row:
                 self._json(404, {'error': 'Файл не найден'})
                 return
-            data = base64.b64decode(row['file_data'])
-            safe_name = re.sub(r'[^\w.\-]', '_', row['filename'])[:200]
-            self._send(200, data, row['file_type'], {
-                'Content-Disposition': f'inline; filename="{safe_name}"',
+            # файл из личной переписки доступен только её участникам
+            if row['recipient_id'] and user['user_id'] not in (row['sender_id'],
+                                                               row['recipient_id']):
+                self._json(403, {'error': 'Нет доступа'})
+                return
+            try:
+                with open(attachment_disk_path(row['storage_name']), 'rb') as f:
+                    data = f.read()
+            except OSError:
+                self._json(404, {'error': 'Файл не найден на диске'})
+                return
+            ctype = safe_attachment_type(row['file_type'])
+            want_download = (qs.get('download') or [''])[0] not in ('', '0')
+            disposition = 'attachment' if (want_download or ctype == 'application/octet-stream') \
+                else 'inline'
+            self._send(200, data, ctype, {
+                'Content-Disposition': content_disposition(row['filename'], disposition),
             })
         else:
             self._json(404, {'error': 'Not found'})
@@ -619,10 +832,10 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                 user = get_session_user(token)
                 delete_session(token)
                 if user:
-                    # Только помечаем пользователя офлайн — НЕ удаляем аккаунт
+                    # Помечаем время выхода — офлайн, но «был(а) в сети» показывает этот момент
                     conn = get_db()
-                    conn.execute('UPDATE users SET last_seen = 0 WHERE user_id = ?',
-                                (user['user_id'],))
+                    conn.execute('UPDATE users SET last_seen = ? WHERE user_id = ?',
+                                (time.time(), user['user_id']))
                     conn.commit()
                     conn.close()
                     invalidate_users_cache()
@@ -637,6 +850,7 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             data = self._read_json()
             message = (data.get('message') or '').strip()[:MAX_MESSAGE_LEN]
             reply_to = data.get('reply_to')
+            recipient_id = data.get('recipient_id') or None
             attachments = data.get('attachments') or []
             if not isinstance(attachments, list):
                 attachments = []
@@ -646,35 +860,65 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                 self._json(400, {'error': 'Пустое сообщение'})
                 return
 
+            if recipient_id:
+                if recipient_id == user['user_id']:
+                    self._json(400, {'error': 'Нельзя писать самому себе'})
+                    return
+                conn = get_db()
+                exists = conn.execute('SELECT 1 FROM users WHERE user_id = ?',
+                                      (recipient_id,)).fetchone()
+                conn.close()
+                if not exists:
+                    self._json(404, {'error': 'Получатель не найден'})
+                    return
+            else:
+                recipient_id = None
+
             msg_id = generate_id()
             ts = datetime.now().strftime('%H:%M:%S')
             conn = get_db()
+            written = []
             try:
                 conn.execute('''
-                    INSERT INTO messages (id, username, user_id, message, timestamp, reply_to)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    INSERT INTO messages (id, username, user_id, message, timestamp, reply_to, recipient_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''', (msg_id, user['username'], user['user_id'], message, ts,
-                      reply_to if reply_to else None))
+                      reply_to if reply_to else None, recipient_id))
                 for att in attachments:
+                    if not isinstance(att, dict):
+                        continue
                     raw = att.get('data') or ''
                     if not raw:
                         continue
                     if raw.startswith('data:'):
                         raw = raw.split(',', 1)[-1]
                     try:
-                        decoded_size = len(base64.b64decode(raw, validate=False))
+                        decoded = base64.b64decode(raw, validate=False)
                     except Exception:
                         continue
-                    if decoded_size > MAX_FILE_SIZE:
+                    if not decoded or len(decoded) > MAX_FILE_SIZE:
                         continue
                     filename = re.sub(r'[^\w.\-]', '_',
                                       (att.get('filename') or 'file'))[:200] or 'file'
                     file_type = (att.get('type') or 'application/octet-stream')[:100]
+                    storage = generate_storage_name(filename)
+                    try:
+                        with open(attachment_disk_path(storage), 'wb') as fh:
+                            fh.write(decoded)
+                    except OSError:
+                        continue
+                    written.append(storage)
                     conn.execute('''
-                        INSERT INTO attachments (message_id, filename, file_data, file_type, file_size)
+                        INSERT INTO attachments
+                            (message_id, filename, storage_name, file_type, file_size)
                         VALUES (?, ?, ?, ?, ?)
-                    ''', (msg_id, filename, raw, file_type, decoded_size))
+                    ''', (msg_id, filename, storage, file_type, len(decoded)))
                 conn.commit()
+            except Exception:
+                conn.rollback()
+                for storage in written:
+                    unlink_attachment(storage)
+                raise
             finally:
                 conn.close()
             invalidate_messages()
@@ -692,11 +936,12 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                 self._json(400, {'error': 'Нет ID'}); return
             conn = get_db()
             row = conn.execute(
-                'SELECT username, completed FROM messages WHERE id = ?',
+                'SELECT user_id, recipient_id, completed FROM messages WHERE id = ?',
                 (message_id,)).fetchone()
             if not row:
                 conn.close(); self._json(404, {'error': 'Не найдено'}); return
-            if row['username'] != user['username']:
+            # «Выполнено» может ставить любой пользователь; в личке — только участники
+            if row['recipient_id'] and user['user_id'] not in (row['user_id'], row['recipient_id']):
                 conn.close(); self._json(403, {'error': 'Нет доступа'}); return
             new_status = 0 if row['completed'] else 1
             conn.execute('UPDATE messages SET completed = ? WHERE id = ?',
@@ -746,10 +991,49 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                 conn.close(); self._json(404, {'error': 'Не найдено'}); return
             if row['username'] != user['username']:
                 conn.close(); self._json(403, {'error': 'Нет доступа'}); return
+            files = [r['storage_name'] for r in conn.execute(
+                'SELECT storage_name FROM attachments WHERE message_id = ?',
+                (message_id,)).fetchall()]
             conn.execute('DELETE FROM messages WHERE id = ?', (message_id,))
             conn.commit(); conn.close()
+            for storage in files:
+                unlink_attachment(storage)
             invalidate_messages()
             self._json(200, {'success': True})
+            return
+
+        # ---- CLEAR HISTORY ----
+        if path == '/api/clear_history':
+            user = self._require_auth()
+            if not user:
+                return
+            data = self._read_json()
+            scope = data.get('scope') or 'public'
+            conn = get_db()
+            if scope == 'public':
+                where = 'recipient_id IS NULL'
+                args = ()
+            else:
+                peer = str(scope)
+                exists = conn.execute('SELECT 1 FROM users WHERE user_id = ?',
+                                      (peer,)).fetchone()
+                if not exists:
+                    conn.close(); self._json(404, {'error': 'Получатель не найден'}); return
+                where = ('((user_id = ? AND recipient_id = ?) '
+                         'OR (user_id = ? AND recipient_id = ?))')
+                args = (user['user_id'], peer, peer, user['user_id'])
+            files = [r['storage_name'] for r in conn.execute(
+                f'SELECT storage_name FROM attachments WHERE message_id IN '
+                f'(SELECT id FROM messages WHERE {where})', args).fetchall()]
+            deleted = conn.execute(f'DELETE FROM messages WHERE {where}', args).rowcount
+            conn.execute(f'DELETE FROM attachments WHERE message_id NOT IN '
+                         f'(SELECT id FROM messages)')
+            conn.commit(); conn.close()
+            for storage in files:
+                unlink_attachment(storage)
+            invalidate_messages()
+            invalidate_read_counts()
+            self._json(200, {'success': True, 'deleted': deleted})
             return
 
         # ---- MARK READ ----
@@ -762,6 +1046,13 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             if not message_id:
                 self._json(400, {'error': 'Нет ID'}); return
             conn = get_db()
+            row = conn.execute(
+                'SELECT user_id, recipient_id FROM messages WHERE id = ?',
+                (message_id,)).fetchone()
+            if not row:
+                conn.close(); self._json(404, {'error': 'Не найдено'}); return
+            if row['recipient_id'] and user['user_id'] not in (row['user_id'], row['recipient_id']):
+                conn.close(); self._json(403, {'error': 'Нет доступа'}); return
             conn.execute('INSERT OR IGNORE INTO read_receipts (message_id, user_id) VALUES (?, ?)',
                          (message_id, user['user_id']))
             conn.commit(); conn.close()

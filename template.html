@@ -21,7 +21,20 @@
                     <span id="onlineCount">0 пользователей онлайн</span>
                 </div>
             </div>
-            <div class="users-list" id="usersList"></div>
+            <div class="sidebar-nav">
+                <button class="chat-nav-item active" id="publicChatBtn" title="Общий чат">
+                    <span class="chat-nav-icon">📢</span>
+                    <span>Общий чат</span>
+                </button>
+            </div>
+            <div class="sidebar-section">
+                <div class="section-title">Личные сообщения</div>
+                <div class="dm-list" id="dmList"></div>
+            </div>
+            <div class="sidebar-section users-section">
+                <div class="section-title">Пользователи</div>
+                <div class="users-list" id="usersList"></div>
+            </div>
         </div>
 
         <!-- Main Chat -->
@@ -29,11 +42,22 @@
             <div class="chat-header">
                 <div class="header-left">
                     <div class="room-info">
-                        <span class="room-name">📢 Дискорд для бедных</span>
+                        <span class="room-name" id="roomName">📢 Дискорд для бедных</span>
                         <span class="room-status" id="chatInfo">Привет</span>
                     </div>
                 </div>
                 <div class="header-actions">
+                    <div class="current-user" id="currentUserBadge" style="display:none;"
+                         title="Ваша учётная запись">
+                        <span class="current-user-avatar" id="currentUserAvatar"></span>
+                        <span class="current-user-name" id="currentUserName"></span>
+                        <span class="current-user-you">вы</span>
+                    </div>
+                    <button class="clear-history-btn" id="clearHistoryBtn" style="display:none;"
+                            title="Очистить историю этого чата">
+                        🧹
+                        <span>Очистить</span>
+                    </button>
                     <button class="logout-btn" id="logoutBtn" style="display:none;">
                         🚪
                         <span>Выйти</span>
