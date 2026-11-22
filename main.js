@@ -12,6 +12,10 @@ let usersCache = [];
 let isLoggedIn = false;
 let pendingAttachments = [];
 let lastMessagesEtag = '';
+let activeChat = { type: 'public', peerId: null, peerName: '' };
+let dmThreads = [];
+let dmThreadsInitialized = false;
+let usersSignature = '';
 
 // ============================================================
 // DOM
@@ -43,6 +47,13 @@ const fileBtn = document.getElementById('fileBtn');
 const fileInput = document.getElementById('fileInput');
 const attachmentPreviewContainer = document.getElementById('attachmentPreviewContainer');
 const notificationContainer = document.getElementById('notificationContainer');
+const roomName = document.getElementById('roomName');
+const publicChatBtn = document.getElementById('publicChatBtn');
+const dmListEl = document.getElementById('dmList');
+const currentUserBadge = document.getElementById('currentUserBadge');
+const currentUserAvatar = document.getElementById('currentUserAvatar');
+const currentUserName = document.getElementById('currentUserName');
+const clearHistoryBtn = document.getElementById('clearHistoryBtn');
 
 const MAX_MESSAGE_LENGTH = 2000;
 const MAX_ATTACHMENTS = 5;
@@ -245,11 +256,15 @@ function doLogin() {
         sendBtn.disabled = false;
         passwordInput.value = '';
         messageInput.focus();
-        chatInfo.textContent = `Вы вошли как ${username}`;
-        loadMessages(); updateUsersList();
+        chatInfo.textContent = 'Онлайн';
+        updateCurrentUserBadge();
+        clearHistoryBtn.style.display = 'flex';
+        loadMessages(); updateUsersList(); updateDmThreads();
         if (updateInterval) clearInterval(updateInterval);
         updateInterval = setInterval(() => {
-            if (isLoggedIn) { loadMessages(); updateUsersList(); sendHeartbeat(); }
+            if (isLoggedIn) {
+                loadMessages(); updateUsersList(); updateDmThreads(); sendHeartbeat();
+            }
         }, 3000);
         requestNotificationPermission();
         showNotification('Успех', `Вы вошли как ${username}`, '👋');
@@ -267,10 +282,14 @@ function handleLogoutLocal(silent = false) {
     authToken = ''; username = ''; user_id = '';
     usernameContainer.style.display = 'flex';
     logoutBtn.style.display = 'none';
+    clearHistoryBtn.style.display = 'none';
+    updateCurrentUserBadge();
     messageInput.disabled = true;
     sendBtn.disabled = true;
     chatInfo.textContent = silent ? 'Сессия истекла, войдите заново' : 'Вы вышли';
     messagesCache = []; usersCache = []; pendingAttachments = [];
+    markedReadIds.clear();
+    resetChatState();
     updateAttachmentPreview(); cancelReply();
     messagesContainer.innerHTML = '';
     if (!silent) showNotification('Выход', 'Вы вышли из чата', '🚪');
@@ -294,16 +313,59 @@ if (authToken) {
         username = localStorage.getItem('chatUsername') || '';
         usernameContainer.style.display = 'none';
         logoutBtn.style.display = 'flex';
+        clearHistoryBtn.style.display = 'flex';
+        updateCurrentUserBadge();
         messageInput.disabled = false;
         sendBtn.disabled = false;
-        loadMessages(); updateUsersList();
+        loadMessages(); updateUsersList(); updateDmThreads();
         if (updateInterval) clearInterval(updateInterval);
         updateInterval = setInterval(() => {
-            if (isLoggedIn) { loadMessages(); updateUsersList(); sendHeartbeat(); }
+            if (isLoggedIn) {
+                loadMessages(); updateUsersList(); updateDmThreads(); sendHeartbeat();
+            }
         }, 3000);
     }).catch(() => handleLogoutLocal(true));
 } else {
     setTimeout(() => usernameInput.focus(), 500);
+}
+
+function updateCurrentUserBadge() {
+    if (!isLoggedIn || !username) {
+        currentUserBadge.style.display = 'none';
+        return;
+    }
+    currentUserBadge.style.display = 'flex';
+    currentUserBadge.title = `Вы вошли как ${username}`;
+    currentUserName.textContent = username;
+    currentUserAvatar.textContent = username.charAt(0).toUpperCase();
+    applyAvatarStyle(currentUserAvatar, username);
+}
+
+clearHistoryBtn.addEventListener('click', clearChatHistory);
+function clearChatHistory() {
+    if (!isLoggedIn) return;
+    const isDm = activeChat.type === 'dm';
+    const target = isDm
+        ? `переписку с ${activeChat.peerName} (у обоих участников)`
+        : 'общий чат (у всех участников)';
+    if (!confirm(`Очистить ${target}? Все сообщения и вложения будут удалены безвозвратно.`)) return;
+
+    const scope = isDm ? activeChat.peerId : 'public';
+    clearHistoryBtn.disabled = true;
+    apiFetch('/api/clear_history', { method: 'POST', body: JSON.stringify({ scope }) })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) throw new Error(data.error || 'Не удалось очистить');
+            messagesCache = [];
+            lastMessagesEtag = '';
+            messagesContainer.innerHTML = '';
+            markedReadIds.clear();
+            loadMessages();
+            updateDmThreads();
+            showNotification('🧹', `История очищена (удалено: ${data.deleted})`, '🧹');
+        })
+        .catch(err => showNotification('Ошибка', err.message || 'Не удалось очистить', '⛔'))
+        .finally(() => { clearHistoryBtn.disabled = false; });
 }
 
 function sendHeartbeat() {
@@ -362,6 +424,7 @@ function sendMessage() {
 
     const payload = { message: message || '', attachments: pendingAttachments };
     if (replyingTo) payload.reply_to = replyingTo;
+    if (activeChat.type === 'dm' && activeChat.peerId) payload.recipient_id = activeChat.peerId;
 
     apiFetch('/api/send', { method: 'POST', body: JSON.stringify(payload) })
         .then(() => {
@@ -370,8 +433,8 @@ function sendMessage() {
             updateAttachmentPreview();
             updateCharCount(); autoResizeTextarea(); messageInput.focus();
             cancelReply();
-            setTimeout(loadMessages, 100);
-            showNotification('✅', 'Тикет создан', '📋');
+            setTimeout(() => { loadMessages(); updateDmThreads(); }, 100);
+            showNotification('✅', activeChat.type === 'dm' ? 'Личное сообщение отправлено' : 'Тикет создан', '📋');
         })
         .catch(() => showNotification('Ошибка', 'Не удалось отправить', '⛔'));
 }
@@ -380,7 +443,8 @@ function resetEditor() {
     editingMessageId = null;
     chatInput.classList.remove('editing');
     sendBtn.textContent = '🚀 Отправить';
-    messageInput.placeholder = 'Опишите ваш вопрос или проблему...';
+    messageInput.placeholder = activeChat.type === 'dm'
+        ? `Сообщение для ${activeChat.peerName}...` : 'Опишите ваш вопрос или проблему...';
     messageInput.value = '';
     pendingAttachments = [];
     updateAttachmentPreview();
@@ -469,9 +533,12 @@ function markMessageAsRead(messageId) {
 // ============================================================
 function loadMessages() {
     if (!isLoggedIn) return;
+    const url = activeChat.type === 'dm'
+        ? `/api/messages?with=${encodeURIComponent(activeChat.peerId)}`
+        : '/api/messages';
     const headers = { 'Authorization': 'Bearer ' + authToken };
     if (lastMessagesEtag) headers['If-None-Match'] = lastMessagesEtag;
-    fetch('/api/messages', { headers, credentials: 'same-origin' })
+    fetch(url, { headers, credentials: 'same-origin' })
         .then(r => {
             if (r.status === 304) return null;
             if (r.status === 401) { handleLogoutLocal(true); return null; }
@@ -506,15 +573,6 @@ function renderMessages(messages) {
     if (!messages || messages.length === 0) {
         messagesContainer.innerHTML = ''; return;
     }
-    const today = formatCurrentDate();
-    let sep = messagesContainer.querySelector('.date-separator');
-    if (!sep || sep.textContent !== today) {
-        if (sep) sep.remove();
-        const s = document.createElement('div');
-        s.className = 'date-separator';
-        s.textContent = today;
-        messagesContainer.insertBefore(s, messagesContainer.firstChild);
-    }
     const existing = messagesContainer.querySelectorAll('.ticket');
     const existingIds = Array.from(existing).map(el => el.dataset.messageId);
     const newIds = messages.map(m => m.id);
@@ -522,15 +580,27 @@ function renderMessages(messages) {
         existing.forEach((el, i) => updateTicketElement(el, messages[i]));
     } else {
         const frag = document.createDocumentFragment();
-        messages.forEach(msg => frag.appendChild(createTicketElement(msg)));
+        let prevDay = null;
+        messages.forEach(msg => {
+            const day = messageDayKey(msg);
+            if (day !== prevDay) {
+                frag.appendChild(createDateSeparator(msg));
+                prevDay = day;
+            }
+            frag.appendChild(createTicketElement(msg));
+        });
         messagesContainer.innerHTML = '';
-        const s = document.createElement('div');
-        s.className = 'date-separator';
-        s.textContent = today;
-        messagesContainer.appendChild(s);
         messagesContainer.appendChild(frag);
     }
     scrollToBottom();
+}
+
+function createDateSeparator(msg) {
+    const sep = document.createElement('div');
+    sep.className = 'date-separator';
+    sep.dataset.day = messageDayKey(msg);
+    sep.textContent = formatDayLabel(messageDate(msg));
+    return sep;
 }
 
 function createTicketElement(msg) {
@@ -550,7 +620,7 @@ function createTicketElement(msg) {
     header.innerHTML = `
         <div class="ticket-avatar">${escapeHtml(initial)}</div>
         <span class="ticket-author">${escapeHtml(msg.username)}</span>
-        <span class="ticket-time" title="${formatFullDate(msg.timestamp)}">${formatFullDate(msg.timestamp)}</span>
+        <span class="ticket-time" title="${formatFullDate(msg)}">${formatFullDate(msg)}</span>
         <span class="ticket-badge">${isOwn ? 'Мой' : 'Тикет'}</span>
         ${msg.completed === 1 ? '<span class="completed-badge">✅</span>' : ''}
         ${msg.read_count !== undefined ? `
@@ -610,32 +680,31 @@ function createTicketElement(msg) {
 function createAttachmentEl(att) {
     const el = document.createElement('div');
     el.className = 'attachment-item';
-    const isImage = att.file_type && att.file_type.startsWith('image/');
+    const isImage = att.file_type && att.file_type.startsWith('image/')
+        && att.file_type !== 'image/svg+xml';
     if (isImage) {
         const img = document.createElement('img');
         img.className = 'ticket-image';
-        img.src = `data:${att.file_type};base64,${att.file_data}`;
+        img.src = attachmentUrl(att, false);
         img.alt = att.filename;
         img.loading = 'lazy';
         img.onclick = () => openImageModal(img.src);
         el.appendChild(img);
     } else {
         const icon = getFileIcon(att.filename, att.file_type);
-        el.innerHTML = `<div class="file-attachment">
+        el.innerHTML = `<a class="file-attachment" href="${attachmentUrl(att, true)}"
+            download="${escapeHtml(att.filename)}">
             <span class="file-icon">${icon}</span>
             <span class="file-name">${escapeHtml(att.filename)}</span>
             <span class="file-size">${formatFileSize(att.file_size)}</span>
-        </div>`;
-        el.onclick = () => {
-            apiFetch(`/api/attachment/${att.id}`).then(r => r.blob()).then(blob => {
-                const url = URL.createObjectURL(blob);
-                const link = document.createElement('a');
-                link.href = url; link.download = att.filename; link.click();
-                setTimeout(() => URL.revokeObjectURL(url), 1000);
-            });
-        };
+        </a>`;
     }
     return el;
+}
+
+function attachmentUrl(att, download) {
+    const token = encodeURIComponent(authToken);
+    return `/api/attachment/${att.id}?token=${token}` + (download ? '&download=1' : '');
 }
 
 function updateTicketElement(el, msg) {
@@ -654,7 +723,7 @@ function updateTicketElement(el, msg) {
         header.innerHTML = `
             <div class="ticket-avatar">${escapeHtml(initial)}</div>
             <span class="ticket-author">${escapeHtml(msg.username)}</span>
-            <span class="ticket-time">${formatFullDate(msg.timestamp)}</span>
+            <span class="ticket-time">${formatFullDate(msg)}</span>
             <span class="ticket-badge">${isOwn ? 'Мой' : 'Тикет'}</span>
             ${msg.completed === 1 ? '<span class="completed-badge">✅</span>' : ''}
             ${readHtml}`;
@@ -694,37 +763,189 @@ function scrollToMessage(id) {
 }
 
 // ============================================================
+// ЧАТЫ (общий / личные)
+// ============================================================
+publicChatBtn.addEventListener('click', () => switchChat('public', null, ''));
+
+function switchChat(type, peerId, peerName) {
+    if (type === 'dm' && (!peerId || peerId === user_id)) return;
+    activeChat = { type, peerId: peerId || null, peerName: peerName || '' };
+    lastMessagesEtag = '';
+    messagesCache = [];
+    messagesContainer.innerHTML = '';
+    publicChatBtn.classList.toggle('active', type === 'public');
+    roomName.textContent = type === 'dm' ? `💬 ${peerName}` : '📢 Дискорд для бедных';
+    messageInput.placeholder = type === 'dm'
+        ? `Сообщение для ${peerName}...` : 'Опишите ваш вопрос или проблему...';
+    cancelReply();
+    renderDmList();
+    messageInput.focus();
+    loadMessages();
+}
+
+window.openDm = function(peerId, peerName) {
+    if (!isLoggedIn || peerId === user_id) return;
+    switchChat('dm', peerId, peerName);
+};
+
+function resetChatState() {
+    activeChat = { type: 'public', peerId: null, peerName: '' };
+    dmThreads = [];
+    dmThreadsInitialized = false;
+    usersSignature = '';
+    lastMessagesEtag = '';
+    publicChatBtn.classList.add('active');
+    roomName.textContent = '📢 Дискорд для бедных';
+    dmListEl.innerHTML = '';
+}
+
+// ============================================================
 // USERS
 // ============================================================
 function updateUsersList() {
-    fetch('/api/users', { credentials: 'same-origin' })
+    apiFetch('/api/users')
         .then(r => r.json())
         .then(data => {
-            const cur = usersCache.map(u => u.user_id).join(',');
-            const neu = data.users.map(u => u.user_id).join(',');
-            if (cur !== neu) {
-                usersCache = data.users;
-                updateUsers(data.users);
+            const users = data.users || [];
+            const sig = users.map(u =>
+                `${u.user_id}:${u.online ? 1 : 0}:${Math.floor((u.last_seen || 0) / 60)}`
+            ).join(',');
+            if (sig !== usersSignature) {
+                usersSignature = sig;
+                usersCache = users;
+                updateUsers(users);
             }
         }).catch(() => {});
+}
+
+function lastSeenText(ts) {
+    if (!ts) return 'давно';
+    const d = new Date(ts * 1000);
+    const now = new Date();
+    const diff = (now.getTime() - d.getTime()) / 1000;
+    if (diff < 60) return 'только что';
+    if (diff < 3600) return `${Math.floor(diff / 60)} мин назад`;
+    const sameDay = (a, b) => a.getFullYear() === b.getFullYear()
+        && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    const pad = n => String(n).padStart(2, '0');
+    const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    if (sameDay(d, now)) return `сегодня в ${hm}`;
+    const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+    if (sameDay(d, yesterday)) return `вчера в ${hm}`;
+    return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} в ${hm}`;
 }
 
 function updateUsers(users) {
     usersList.innerHTML = '';
     users.forEach(user => {
         const div = document.createElement('div');
-        div.className = 'user-item';
-        const initial = (user.username || '?').charAt(0).toUpperCase();
         const isMe = user.user_id === user_id && isLoggedIn;
+        div.className = 'user-item' + (user.online ? ' online' : ' offline')
+            + (isMe ? ' is-me' : '');
+        div.title = user.online ? 'В сети' : `Был(а) в сети: ${lastSeenText(user.last_seen)}`;
+        const initial = (user.username || '?').charAt(0).toUpperCase();
         div.innerHTML = `
             <div class="avatar">${escapeHtml(initial)}</div>
-            <span class="username">${escapeHtml(user.username)}${isMe ? ' <span class="me-badge">(вы)</span>' : ''}</span>
-            <div class="status-dot"></div>`;
+            <div class="user-meta">
+                <span class="username">${escapeHtml(user.username)}${isMe ? ' <span class="me-badge">(вы)</span>' : ''}</span>
+                <span class="user-status">${user.online ? 'в сети' : 'был(а) ' + lastSeenText(user.last_seen)}</span>
+            </div>
+            <div class="status-dot ${user.online ? 'online' : 'offline'}"></div>`;
         const avatarEl = div.querySelector('.avatar');
         if (avatarEl) applyAvatarStyle(avatarEl, user.username);
+        if (!isMe) {
+            div.style.cursor = 'pointer';
+            div.addEventListener('click', () => openDm(user.user_id, user.username));
+        }
         usersList.appendChild(div);
     });
-    onlineCount.textContent = `${users.length} пользователей онлайн`;
+    const online = users.filter(u => u.online).length;
+    onlineCount.textContent = `${online} пользователей онлайн`;
+}
+
+// ============================================================
+// ЛИЧНЫЕ СООБЩЕНИЯ (список диалогов)
+// ============================================================
+function updateDmThreads() {
+    if (!isLoggedIn) return;
+    apiFetch('/api/dm_threads')
+        .then(r => r.json())
+        .then(data => {
+            const threads = data.threads || [];
+            if (dmThreadsInitialized) {
+                threads.forEach(t => {
+                    const prev = dmThreads.find(x => x.peer_id === t.peer_id);
+                    const prevUnread = prev ? prev.unread : 0;
+                    const isActive = activeChat.type === 'dm' && activeChat.peerId === t.peer_id;
+                    if (t.unread > prevUnread && !isActive && t.last_sender_id !== user_id) {
+                        const snippet = t.message
+                            ? (t.message.length > 50 ? t.message.substring(0, 50) + '...' : t.message)
+                            : '📎 Вложение';
+                        showNotification(`💬 ${t.peer_username}`, snippet, '💬');
+                        if (document.hidden && 'Notification' in window
+                            && Notification.permission === 'granted') {
+                            const notif = new Notification(`💬 ${t.peer_username}`, {
+                                body: snippet, icon: '/favicon.ico', tag: 'dm-' + t.peer_id
+                            });
+                            notif.onclick = () => {
+                                window.focus(); notif.close();
+                                openDm(t.peer_id, t.peer_username);
+                            };
+                        }
+                    }
+                });
+            }
+            dmThreads = threads;
+            dmThreadsInitialized = true;
+            renderDmList();
+        }).catch(() => {});
+}
+
+function formatShortTime(ts) {
+    if (!ts) return '';
+    const d = new Date(ts * 1000);
+    const now = new Date();
+    const sameDay = (a, b) => a.getFullYear() === b.getFullYear()
+        && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    const pad = n => String(n).padStart(2, '0');
+    if (sameDay(d, now)) return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}`;
+}
+
+function renderDmList() {
+    dmListEl.innerHTML = '';
+    if (dmThreads.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'dm-empty';
+        empty.textContent = 'Нажмите на пользователя, чтобы написать в личку';
+        dmListEl.appendChild(empty);
+        return;
+    }
+    dmThreads.forEach(t => {
+        const div = document.createElement('div');
+        const active = activeChat.type === 'dm' && activeChat.peerId === t.peer_id;
+        div.className = 'dm-item' + (active ? ' active' : '');
+        const initial = (t.peer_username || '?').charAt(0).toUpperCase();
+        const snippet = t.message || (t.has_attachment ? '📎 Вложение' : '');
+        const prefix = t.last_sender_id === user_id ? 'Вы: ' : '';
+        div.innerHTML = `
+            <div class="avatar">${escapeHtml(initial)}</div>
+            <div class="dm-meta">
+                <div class="dm-top">
+                    <span class="dm-name">${escapeHtml(t.peer_username)}</span>
+                    <span class="dm-time">${formatShortTime(t.last_at)}</span>
+                </div>
+                <div class="dm-bottom">
+                    <span class="dm-preview">${escapeHtml(prefix + (snippet.length > 34 ? snippet.substring(0, 34) + '...' : snippet))}</span>
+                    ${t.unread > 0 ? `<span class="unread-badge">${t.unread > 99 ? '99+' : t.unread}</span>` : ''}
+                </div>
+            </div>
+            <div class="status-dot ${t.peer_online ? 'online' : 'offline'}"></div>`;
+        const avatarEl = div.querySelector('.avatar');
+        if (avatarEl) applyAvatarStyle(avatarEl, t.peer_username);
+        div.addEventListener('click', () => openDm(t.peer_id, t.peer_username));
+        dmListEl.appendChild(div);
+    });
 }
 
 // ============================================================
@@ -815,22 +1036,48 @@ function getFileIcon(filename, fileType) {
         mkv:'🎬', exe:'⚙️', dmg:'💿', iso:'💿'};
     return icons[ext] || '📄';
 }
-function formatFullDate(timestamp) {
-    if (!timestamp) return '';
-    if (/^\d{2}:\d{2}:\d{2}$/.test(timestamp)) {
-        const now = new Date();
-        const d = String(now.getDate()).padStart(2,'0');
-        const m = String(now.getMonth()+1).padStart(2,'0');
-        const y = now.getFullYear();
-        return `${d}.${m}.${y} ${timestamp}`;
+function messageDate(msg) {
+    if (!msg) return null;
+    if (msg.created_at) {
+        const d = new Date(msg.created_at * 1000);
+        if (!isNaN(d.getTime())) return d;
     }
-    return timestamp;
+    if (msg.timestamp) {
+        // Полная дата, если сервер когда-нибудь начнёт отдавать timestamp с датой
+        const d = new Date(String(msg.timestamp).replace(' ', 'T'));
+        if (!isNaN(d.getTime())) return d;
+    }
+    return null;
 }
-function formatCurrentDate() {
-    const now = new Date();
+
+function messageDayKey(msg) {
+    const d = messageDate(msg);
+    if (!d) return '';
+    return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+function formatFullDate(msg) {
+    const d = messageDate(msg);
+    if (!d) return (msg && msg.timestamp) || '';
+    const pad = n => String(n).padStart(2, '0');
+    return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} `
+        + `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function formatDayLabel(date) {
+    if (!date) return '';
     const days = ['воскресенье','понедельник','вторник','среда','четверг','пятница','суббота'];
     const months = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
-    return `${days[now.getDay()]}, ${now.getDate()} ${months[now.getMonth()]} ${now.getFullYear()}`;
+    const now = new Date();
+    const sameDay = (a, b) => a.getFullYear() === b.getFullYear()
+        && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    let prefix = '';
+    if (sameDay(date, now)) prefix = 'Сегодня, ';
+    else if (sameDay(date, yesterday)) prefix = 'Вчера, ';
+    return `${prefix}${days[date.getDay()]}, ${date.getDate()} `
+        + `${months[date.getMonth()]} ${date.getFullYear()}`;
 }
 function formatFileSize(bytes) {
     if (bytes < 1024) return bytes + ' B';
