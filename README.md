@@ -60,6 +60,9 @@
 | 🔐 Авторизация по паролю | PBKDF2-SHA256 (200k итераций) + соль, сессии с токеном, HttpOnly cookie |
 | 🚦 Rate limit на логин | 5 попыток за 15 минут на IP |
 | 🛡️ Админ-панель | `admin_tool.pyw` — юзеры, пароли, сброс сессий, очистка истории |
+| 💬 Личные сообщения | Диалоги один-на-один, список чатов, непрочитанные, онлайн/последний визит |
+| 📝 Заметки | Личный чат с самим собой: текст и вложения, видно только вам |
+| 🧹 Очистка истории | Общий чат, личная переписка или заметки — из интерфейса |
 | 📋 Тикет-система | Каждое сообщение — отдельная карточка-заявка |
 | ✅ Статус «Выполнено» | Зелёная галочка, зачёркнутый текст, отметка в шапке |
 | 🖼️ Вложения | Изображения, документы, архивы, видео — до 5 файлов, до 10 МБ каждый |
@@ -195,7 +198,7 @@ lan-party/
 docker compose up -d
 ```
 
-Открыть: **http://localhost:5555** (или порт, указанный в compose)
+Открыть: **http://localhost:5000** (или порт, указанный в compose)
 
 Остановить:
 
@@ -220,7 +223,7 @@ docker build -t lan-party .
 # Запуск с сохранением БД в именованном томе
 docker run -d \
     --name lan-party \
-    -p 5555:5555 \
+    -p 5000:5000 \
     -v lan-party-data:/app/data \
     lan-party
 ```
@@ -245,10 +248,10 @@ docker volume rm lan-party-data
 Если контейнер запущен на хосте с IP `192.168.1.42`, другие устройства откроют:
 
 ```
-http://192.168.1.42:5555
+http://192.168.1.42:5000
 ```
 
-Порт `5555` уже проброшен на хост. Убедитесь, что фаервол хоста разрешает входящие на `5555`.
+Порт `5000` уже проброшен на хост. Убедитесь, что фаервол хоста разрешает входящие на `5000`.
 
 ---
 
@@ -276,10 +279,10 @@ docker exec -it lan-party ls -la /app/data/
 
 ```yaml
 ports:
-  - "8080:5555"
+  - "8080:5000"
 ```
 
-Снаружи — `8080`, внутри — `5555`.
+Снаружи — `8080`, внутри — `5000`.
 
 **Данные пропадают.** Проверьте, что том смонтирован:
 
@@ -294,6 +297,41 @@ docker inspect lan-party | grep -A 5 Mounts
 ```dockerfile
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 ...
 ```
+
+---
+
+## 🌐 Прод за nginx
+
+Приложение можно безопасно поставить за reverse proxy. Готовый пример — [`nginx.conf.example`](nginx.conf.example).
+
+Коротко:
+
+1. **Приложение слушает только loopback.** По умолчанию `HOST=127.0.0.1`; в Docker — `HOST=0.0.0.0` (порт всё равно публикуйте только на localhost: `127.0.0.1:5000:5000`).
+2. **Включите доверие к прокси и Secure-cookie**:
+
+   ```bash
+   HOST=127.0.0.1 PORT=5000 TRUST_PROXY=1 COOKIE_SECURE=1 python server.py
+   ```
+
+   `TRUST_PROXY=1` нужен, чтобы rate limit считался по реальному IP из `X-Real-IP`/`X-Forwarded-For`, а HTTPS определялся по `X-Forwarded-Proto`. **Не включайте его**, если сервер доступен напрямую — иначе IP можно подделать.
+3. **nginx** должен передавать `Host`, `X-Real-IP`, `X-Forwarded-For`, `X-Forwarded-Proto`. Пример уже содержит эти строки.
+4. **Лимит тела** в nginx (`client_max_body_size 72m`) должен совпадать с `MAX_BODY_SIZE` приложения, иначе большие вложения будут отбиваться nginx-ом с `413`.
+5. **HTTPS** обязателен, если ставите `COOKIE_SECURE=1` и HSTS. Приложение также само добавляет HSTS, когда видит HTTPS (напрямую или через `X-Forwarded-Proto` при `TRUST_PROXY=1`).
+
+Переменные окружения:
+
+| Переменная | По умолчанию | Назначение |
+|---|---|---|
+| `HOST` | `127.0.0.1` | Интерфейс прослушивания (в Docker — `0.0.0.0`) |
+| `PORT` | `5555` | Порт |
+| `DB_PATH` | `chat.db` | Путь к SQLite |
+| `UPLOAD_DIR` | рядом с БД, `uploads/` | Папка вложений |
+| `TRUST_PROXY` | выкл. | Доверять `X-Real-IP` / `X-Forwarded-For` / `X-Forwarded-Proto` |
+| `COOKIE_SECURE` | выкл. | Ставить `Secure` на cookie сессии |
+| `MAX_BODY_SIZE` | `75497472` (72 МБ) | Максимальный размер тела запроса |
+| `READ_TIMEOUT` | `30` | Таймаут чтения сокета, сек |
+| `MAX_CONCURRENT_REQUESTS` | `200` | Предел одновременных соединений |
+| `SEND_MAX_PER_WINDOW` | `60` | Лимит отправки сообщений в минуту на пользователя |
 
 ---
 
@@ -328,16 +366,22 @@ python admin_tool.pyw
 |---|---|
 | Хеширование паролей | PBKDF2-HMAC-SHA256, 200 000 итераций, уникальная соль |
 | Сравнение хешей | `hmac.compare_digest` (защита от timing-атак) |
+| Защита от перебора имён | Для несуществующего пользователя всё равно считается dummy-PBKDF2 |
 | Сессии | Случайный `token_urlsafe(32)`, TTL 24 ч, хранится в БД |
-| Cookie | `HttpOnly; Path=/; SameSite=Strict; Max-Age=86400` |
-| Rate limit | 5 попыток / 15 мин на IP, in-memory + аудит в `login_attempts` |
+| Cookie | `HttpOnly; Path=/; SameSite=Strict; Max-Age=86400` (+ `Secure` при `COOKIE_SECURE=1`) |
+| CSRF | Все `POST` проверяют `Origin`/`Host`; cookie `SameSite=Strict` |
+| CSP | `default-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'` |
+| Security-заголовки | `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Permissions-Policy`, `Cross-Origin-Opener-Policy`, `Cross-Origin-Resource-Policy`, HSTS при HTTPS |
+| Rate limit логина | 5 попыток / 15 мин на IP (реальный IP при `TRUST_PROXY=1`), in-memory + аудит в `login_attempts` |
+| Rate limit отправки | 60 сообщений / минуту на пользователя (настраивается `SEND_MAX_PER_WINDOW`) |
+| Ограничение потоков | `BoundedSemaphore(MAX_CONCURRENT_REQUESTS=200)` + socket-таймаут 30 с |
 | Санитизация имени | Удаление control-символов и `< >`, лимит 20 символов |
 | Санитизация файлов | `re.sub(r'[^\w.\-]', '_', ...)`, лимит 200 символов |
-| Лимит тела запроса | 25 МБ |
+| Лимит тела запроса | `MAX_BODY_SIZE` (по умолчанию 72 МБ — 5 файлов по 10 МБ в base64), иначе `413` |
 | Лимит сообщения | 2000 символов |
 | Лимит файла | 10 МБ, до 5 штук |
-| Заголовки | `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` |
-| Gzip | Только если `Accept-Encoding: gzip` и тело > 1 КБ |
+| Вложения | Хранятся на диске (`UPLOAD_DIR`), скачивание только авторизованным участникам диалога; токен в URL не передаётся |
+| Доступ к API | Cookie `session` или `Authorization: Bearer`; права проверяются по `user_id`, а не по имени |
 
 ---
 
@@ -360,7 +404,7 @@ python admin_tool.pyw
 
 ## 🔌 API — краткая справка
 
-Все эндпоинты принимают и возвращают **JSON**. Авторизация — заголовок `Authorization: Bearer <token>` **или** cookie `session=<token>`.
+Все эндпоинты принимают и возвращают **JSON**. Авторизация — cookie `session=<token>` (ставится при логине, HttpOnly) **или** заголовок `Authorization: Bearer <token>` для API-клиентов.
 
 ### `GET` запросы
 
@@ -369,9 +413,12 @@ python admin_tool.pyw
 | `GET` | `/` | HTML-страница чата |
 | `GET` | `/style.css` | Стили |
 | `GET` | `/main.js` | Клиентский скрипт |
-| `GET` | `/api/messages` | Список сообщений (с вложениями и `read_count`), поддерживает `If-None-Match` → `304` |
-| `GET` | `/api/users` | Активные пользователи (`last_seen < 15 сек`) |
-| `GET` | `/api/attachment/<id>` | Скачать/открыть вложение по ID |
+| `GET` | `/api/messages` | Общий чат (с вложениями и `read_count`), поддерживает `If-None-Match` → `304` |
+| `GET` | `/api/messages?with=<user_id>` | Личный диалог с пользователем; `with=<свой id>` — свои заметки |
+| `GET` | `/api/users` | Список пользователей и их онлайн-статус |
+| `GET` | `/api/me` | Текущий пользователь по cookie — для авто-входа |
+| `GET` | `/api/dm_threads` | Список личных диалогов, непрочитанные, `is_self` |
+| `GET` | `/api/attachment/<id>` | Открыть/скачать вложение (только авторизованным; `?download=1` — как файл) |
 
 ### `POST` запросы
 
@@ -379,11 +426,12 @@ python admin_tool.pyw
 |---|---|---|---|
 | `POST` | `/api/login` | `{username, password}` | Вход по паролю → `{token, username, user_id}` + `Set-Cookie` |
 | `POST` | `/api/logout` | — | Выход: удаляет сессию, cookie, ставит `last_seen=0` |
-| `POST` | `/api/send` | `{message, attachments[], reply_to?}` | Отправить новую заявку |
+| `POST` | `/api/send` | `{message, attachments[], reply_to?, recipient_id?}` | Отправить заявку; `recipient_id` — личное сообщение или заметка (`recipient_id = свой user_id`) |
 | `POST` | `/api/edit` | `{message_id, message}` | Редактировать своё сообщение |
 | `POST` | `/api/delete` | `{message_id}` | Удалить своё сообщение |
 | `POST` | `/api/toggle_completed` | `{message_id}` | Переключить статус «Выполнено» |
 | `POST` | `/api/mark_read` | `{message_id}` | Отметить сообщение прочитанным |
+| `POST` | `/api/clear_history` | `{scope: "public" \| <peer_id>}` | Очистить общий чат, диалог или заметки |
 | `POST` | `/api/heartbeat` | — | Продлить сессию (онлайн) |
 
 > ℹ️ Регистрации через API **нет** — только через `admin_tool.pyw`.
@@ -430,6 +478,7 @@ SQLite, файл `chat.db` создаётся автоматически при 
 | `edit_time` | TEXT | Время правки |
 | `reply_to` | TEXT | ID родительского сообщения |
 | `completed` | INTEGER | `1`, если выполнено |
+| `recipient_id` | TEXT | `NULL` — общий чат; иначе `user_id` получателя (`= свой` для заметок) |
 | `created_at` | REAL | Timestamp создания |
 
 **`attachments`** — вложения
@@ -439,9 +488,11 @@ SQLite, файл `chat.db` создаётся автоматически при 
 | `id` | INTEGER (PK) | ID файла |
 | `message_id` | TEXT | FK на `messages` (CASCADE) |
 | `filename` | TEXT | Имя файла |
-| `file_data` | TEXT | Содержимое в base64 |
+| `storage_name` | TEXT | Имя файла на диске (`UPLOAD_DIR`) |
 | `file_type` | TEXT | MIME-тип |
 | `file_size` | INTEGER | Размер в байтах |
+
+> Старые базы с колонкой `file_data` (base64) автоматически мигрируются на диск при старте.
 
 **`read_receipts`** — прочтения
 
@@ -474,16 +525,10 @@ SQLite, файл `chat.db` создаётся автоматически при 
 Откройте `template.html` и найдите:
 
 ```html
-<span class="room-name">📢 Дискорд для бедных</span>
+<span class="room-name" id="roomName">Общий чат</span>
 ```
 
-Замените на любой вариант, например:
-
-```html
-<span class="room-name">
-    <i class="fas fa-ethernet"></i> LAN Party
-</span>
-```
+Заголовок обновляется из `main.js` (`updateChatHeader`): в общем чате показывается число участников онлайн, в личном диалоге — имя собеседника и его статус, в заметках — «Мои заметки». Чтобы переименовать общий чат, поправьте строку в `updateChatHeader` и `resetChatState`.
 
 ### Тема оформления
 

@@ -2,6 +2,7 @@ import http.server
 import json
 import time
 import os
+import ipaddress
 import sqlite3
 import base64
 import hashlib
@@ -20,12 +21,23 @@ from collections import defaultdict, deque
 DB_PATH = os.environ.get('DB_PATH', 'chat.db')
 SECRET_KEY = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 SESSION_TTL = 24 * 3600
-MAX_BODY_SIZE = 25 * 1024 * 1024
+# 5 файлов по 10 МБ в base64 ≈ 67 МБ + запас на JSON
+MAX_BODY_SIZE = int(os.environ.get('MAX_BODY_SIZE', 72 * 1024 * 1024))
 MAX_MESSAGE_LEN = 2000
 MAX_USERNAME_LEN = 20
 MAX_ATTACHMENTS = 5
 MAX_FILE_SIZE = 10 * 1024 * 1024
 MESSAGES_LIMIT = 100
+READ_TIMEOUT = int(os.environ.get('READ_TIMEOUT', 30))
+MAX_CONCURRENT_REQUESTS = int(os.environ.get('MAX_CONCURRENT_REQUESTS', 200))
+
+# За nginx: TRUST_PROXY=1 — доверяем X-Real-IP / X-Forwarded-For / X-Forwarded-Proto
+TRUST_PROXY = os.environ.get('TRUST_PROXY', '').strip().lower() in ('1', 'true', 'yes', 'on')
+# Принудительно ставить Secure у cookie (если TLS терминируется раньше nginx)
+COOKIE_SECURE = os.environ.get('COOKIE_SECURE', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+SEND_MAX_PER_WINDOW = int(os.environ.get('SEND_MAX_PER_WINDOW', 60))
+SEND_WINDOW = 60
 
 # Вложения хранятся файлами на диске (по умолчанию — папка uploads рядом с БД)
 UPLOAD_DIR = os.environ.get('UPLOAD_DIR') or os.path.join(
@@ -41,6 +53,22 @@ INLINE_SAFE_TYPES = {
 
 LOGIN_MAX_ATTEMPTS = 5
 LOGIN_WINDOW = 15 * 60
+
+# Политика безопасности контента: только свои скрипты, без inline-обработчиков.
+# style-src допускает inline-стили (шаблон и JS задают display/цвета).
+SECURITY_CSP = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "media-src 'self'; "
+    "font-src 'self'; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "form-action 'self'; "
+    "frame-ancestors 'none'"
+)
 
 # ============================================================
 # DB
@@ -336,16 +364,38 @@ def verify_password(password: str, password_hash: str, salt: str) -> bool:
     return hmac.compare_digest(calc, password_hash)
 
 
+# хэш-заглушка: вход с несуществующим логином тратит столько же времени,
+# сколько и с существующим (защита от определения логинов по таймингу)
+_DUMMY_HASH, _DUMMY_SALT = hash_password(secrets.token_hex(16))
+
+
 def sanitize_username(name: str) -> str:
     name = (name or '').strip()
     name = re.sub(r'[\x00-\x1f\x7f<>]', '', name)
     return name[:MAX_USERNAME_LEN]
 
 
+def _valid_ip(value: str):
+    try:
+        ipaddress.ip_address(value)
+        return value
+    except (ValueError, TypeError):
+        return None
+
+
 def get_client_ip(handler) -> str:
-    xff = handler.headers.get('X-Forwarded-For')
-    if xff:
-        return xff.split(',')[0].strip()
+    """Реальный IP клиента. Заголовки прокси читаем только при TRUST_PROXY=1,
+    иначе клиент мог бы подделать X-Forwarded-For и обойти rate limit."""
+    if TRUST_PROXY:
+        real_ip = _valid_ip((handler.headers.get('X-Real-IP') or '').strip())
+        if real_ip:
+            return real_ip
+        xff = handler.headers.get('X-Forwarded-For') or ''
+        # последний адрес добавлен нашим nginx (предыдущие может подделать клиент)
+        for candidate in reversed([p.strip() for p in xff.split(',') if p.strip()]):
+            valid = _valid_ip(candidate)
+            if valid:
+                return valid
     return handler.client_address[0]
 
 
@@ -377,6 +427,23 @@ def register_failed_attempt(ip: str):
 def clear_attempts(ip: str):
     with _login_attempts_lock:
         _login_attempts_mem.pop(ip, None)
+
+
+# ---- антиспам: не больше SEND_MAX_PER_WINDOW сообщений в минуту на пользователя ----
+_send_times = defaultdict(deque)
+_send_times_lock = threading.Lock()
+
+
+def is_send_rate_limited(user_id: str) -> bool:
+    now = time.time()
+    with _send_times_lock:
+        q = _send_times[user_id]
+        while q and now - q[0] > SEND_WINDOW:
+            q.popleft()
+        if len(q) >= SEND_MAX_PER_WINDOW:
+            return True
+        q.append(now)
+        return False
 
 
 # ============================================================
@@ -571,6 +638,40 @@ def invalidate_messages():
 class ChatHandler(http.server.BaseHTTPRequestHandler):
     server_version = "LANParty/2.1"
     sys_version = ""
+    timeout = READ_TIMEOUT  # защита от медленных/зависших соединений (slowloris)
+
+    def _is_https(self) -> bool:
+        if COOKIE_SECURE:
+            return True
+        if TRUST_PROXY:
+            proto = (self.headers.get('X-Forwarded-Proto') or '').split(',')[0].strip().lower()
+            return proto == 'https'
+        return False
+
+    def _session_cookie(self, token: str, max_age: int = SESSION_TTL) -> str:
+        cookie = f'session={token}; HttpOnly; Path=/; SameSite=Strict; Max-Age={max_age}'
+        if self._is_https():
+            cookie += '; Secure'
+        return cookie
+
+    def _origin_allowed(self) -> bool:
+        """CSRF-защита: изменяющие запросы принимаем только со своего origin."""
+        origin = (self.headers.get('Origin') or '').strip()
+        if not origin:
+            return True  # curl/API-клиенты без Origin
+        try:
+            parsed = urlparse(origin)
+        except ValueError:
+            return False
+        if not parsed.netloc:
+            return False  # Origin: null и т.п.
+        host = (self.headers.get('Host') or '').strip()
+        if TRUST_PROXY:
+            host = (self.headers.get('X-Forwarded-Host') or host).strip()
+            proto = (self.headers.get('X-Forwarded-Proto') or '').split(',')[0].strip().lower()
+            if proto and parsed.scheme != proto:
+                return False
+        return parsed.netloc.lower() == host.lower()
 
     def _send(self, status, body, content_type='application/json',
               extra_headers=None, compress=False):
@@ -586,6 +687,13 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         self.send_header('X-Frame-Options', 'DENY')
         self.send_header('Referrer-Policy', 'no-referrer')
         self.send_header('Cache-Control', 'no-store')
+        self.send_header('Content-Security-Policy', SECURITY_CSP)
+        self.send_header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+        self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
+        self.send_header('Cross-Origin-Resource-Policy', 'same-origin')
+        self.send_header('X-Permitted-Cross-Domain-Policies', 'none')
+        if self._is_https():
+            self.send_header('Strict-Transport-Security', 'max-age=31536000')
         if use_gzip:
             self.send_header('Content-Encoding', 'gzip')
             self.send_header('Vary', 'Accept-Encoding')
@@ -662,9 +770,6 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                 return
             qs = parse_qs(urlparse(self.path).query)
             peer_id = (qs.get('with') or [''])[0] or None
-            if peer_id == user['user_id']:
-                self._json(400, {'error': 'Нельзя писать самому себе'})
-                return
             if peer_id:
                 convo = 'dm:' + ':'.join(sorted([user['user_id'], peer_id]))
                 messages = load_messages(convo, user['user_id'], peer_id)
@@ -685,6 +790,13 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             if not user:
                 return
             self._json(200, get_users_view())
+
+        elif path == '/api/me':
+            # текущий пользователь по cookie — для авто-входа на фронтенде
+            user = self._require_auth()
+            if not user:
+                return
+            self._json(200, {'user_id': user['user_id'], 'username': user['username']})
 
         elif path == '/api/dm_threads':
             user = self._require_auth()
@@ -724,25 +836,26 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                 if r['peer_id'] is None:
                     continue
                 last_seen = r['peer_last_seen'] or 0
+                is_self = r['peer_id'] == uid
                 threads.append({
                     'peer_id': r['peer_id'],
                     'peer_username': r['peer_username'] or 'Неизвестный',
                     'peer_online': (now - last_seen) < 15,
+                    'is_self': is_self,
                     'last_sender_id': r['last_sender_id'],
                     'message': r['message'] or '',
                     'has_attachment': bool(r['has_attachment']),
                     'last_at': r['created_at'] or 0,
-                    'unread': r['unread'] or 0,
+                    # свои заметки не считаются непрочитанными
+                    'unread': 0 if is_self else (r['unread'] or 0),
                 })
             self._json(200, {'threads': threads})
 
         elif path.startswith('/api/attachment/'):
-            # токен можно передать в query — это нужно для <img src> и прямых ссылок
-            qs = parse_qs(urlparse(self.path).query)
-            qtoken = (qs.get('token') or [''])[0]
-            user = get_session_user(qtoken) if qtoken else get_session_user(extract_token(self))
+            # cookie сессии браузер отправляет сам — токен в URL больше не нужен
+            # (он попадал в логи nginx и историю браузера)
+            user = self._require_auth()
             if not user:
-                self._json(401, {'error': 'Не авторизован'})
                 return
             try:
                 file_id = int(path.rsplit('/', 1)[-1])
@@ -773,6 +886,7 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                 self._json(404, {'error': 'Файл не найден на диске'})
                 return
             ctype = safe_attachment_type(row['file_type'])
+            qs = parse_qs(urlparse(self.path).query)
             want_download = (qs.get('download') or [''])[0] not in ('', '0')
             disposition = 'attachment' if (want_download or ctype == 'application/octet-stream') \
                 else 'inline'
@@ -786,6 +900,21 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         path = urlparse(self.path).path
         ip = get_client_ip(self)
+
+        # CSRF: изменяющие запросы только с нашего origin
+        if not self._origin_allowed():
+            self._json(403, {'error': 'Запрос с чужого источника отклонён'})
+            return
+
+        # ограничение размера тела запроса
+        try:
+            length = int(self.headers.get('Content-Length') or 0)
+        except ValueError:
+            length = -1
+        if length < 0 or length > MAX_BODY_SIZE:
+            self.close_connection = True
+            self._json(413, {'error': 'Слишком большой запрос'})
+            return
 
         # ---- LOGIN (единственный способ войти) ----
         if path == '/api/login':
@@ -805,7 +934,13 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                 (username,)).fetchone()
             conn.close()
 
-            if not row or not verify_password(password, row['password_hash'], row['salt']):
+            if row:
+                password_ok = verify_password(password, row['password_hash'], row['salt'])
+            else:
+                verify_password(password, _DUMMY_HASH, _DUMMY_SALT)
+                password_ok = False
+
+            if not password_ok:
                 register_failed_attempt(ip)
                 self._json(401, {'error': 'Неверное имя или пароль'})
                 return
@@ -822,7 +957,7 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             token = create_session(user_id, ip)
             self._json(200, {
                 'success': True, 'username': username, 'user_id': user_id, 'token': token,
-            }, {'Set-Cookie': f'session={token}; HttpOnly; Path=/; SameSite=Strict; Max-Age={SESSION_TTL}'})
+            }, {'Set-Cookie': self._session_cookie(token)})
             return
 
         # ---- LOGOUT ----
@@ -840,12 +975,15 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                     conn.close()
                     invalidate_users_cache()
             self._json(200, {'success': True},
-                    {'Set-Cookie': 'session=; Max-Age=0; Path=/'})
+                    {'Set-Cookie': self._session_cookie('', 0)})
             return
         # ---- SEND ----
         if path == '/api/send':
             user = self._require_auth()
             if not user:
+                return
+            if is_send_rate_limited(user['user_id']):
+                self._json(429, {'error': 'Слишком часто. Подождите минуту.'})
                 return
             data = self._read_json()
             message = (data.get('message') or '').strip()[:MAX_MESSAGE_LEN]
@@ -861,9 +999,7 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             if recipient_id:
-                if recipient_id == user['user_id']:
-                    self._json(400, {'error': 'Нельзя писать самому себе'})
-                    return
+                # писать себе разрешено — это личные заметки
                 conn = get_db()
                 exists = conn.execute('SELECT 1 FROM users WHERE user_id = ?',
                                       (recipient_id,)).fetchone()
@@ -962,11 +1098,11 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             if not message_id or not new_message:
                 self._json(400, {'error': 'Неверные данные'}); return
             conn = get_db()
-            row = conn.execute('SELECT username FROM messages WHERE id = ?',
+            row = conn.execute('SELECT user_id FROM messages WHERE id = ?',
                                (message_id,)).fetchone()
             if not row:
                 conn.close(); self._json(404, {'error': 'Не найдено'}); return
-            if row['username'] != user['username']:
+            if row['user_id'] != user['user_id']:
                 conn.close(); self._json(403, {'error': 'Нет доступа'}); return
             conn.execute('UPDATE messages SET message = ?, edited = 1, edit_time = ? WHERE id = ?',
                          (new_message, datetime.now().strftime('%H:%M:%S'), message_id))
@@ -985,11 +1121,11 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             if not message_id:
                 self._json(400, {'error': 'Нет ID'}); return
             conn = get_db()
-            row = conn.execute('SELECT username FROM messages WHERE id = ?',
+            row = conn.execute('SELECT user_id FROM messages WHERE id = ?',
                                (message_id,)).fetchone()
             if not row:
                 conn.close(); self._json(404, {'error': 'Не найдено'}); return
-            if row['username'] != user['username']:
+            if row['user_id'] != user['user_id']:
                 conn.close(); self._json(403, {'error': 'Нет доступа'}); return
             files = [r['storage_name'] for r in conn.execute(
                 'SELECT storage_name FROM attachments WHERE message_id = ?',
@@ -1062,15 +1198,18 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
 
         # ---- HEARTBEAT ----
         if path == '/api/heartbeat':
-            user = self._require_auth()
+            token = extract_token(self)
+            user = get_session_user(token)
             if not user:
+                self._json(401, {'error': 'Не авторизован'})
                 return
             conn = get_db()
             conn.execute('UPDATE users SET last_seen = ? WHERE user_id = ?',
                          (time.time(), user['user_id']))
             conn.commit(); conn.close()
             invalidate_users_cache()
-            self._json(200, {'success': True})
+            # обновляем cookie: авто-вход и загрузка вложений работают без токена в JS
+            self._json(200, {'success': True}, {'Set-Cookie': self._session_cookie(token)})
             return
 
         self._json(404, {'error': 'Not found'})

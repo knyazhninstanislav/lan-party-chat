@@ -26,6 +26,10 @@
                     <span class="chat-nav-icon">📢</span>
                     <span>Общий чат</span>
                 </button>
+                <button class="chat-nav-item" id="selfChatBtn" title="Личные заметки — видны только вам">
+                    <span class="chat-nav-icon">📝</span>
+                    <span>Мои заметки</span>
+                </button>
             </div>
             <div class="sidebar-section">
                 <div class="section-title">Личные сообщения</div>
@@ -42,8 +46,11 @@
             <div class="chat-header">
                 <div class="header-left">
                     <div class="room-info">
-                        <span class="room-name" id="roomName">📢 Дискорд для бедных</span>
-                        <span class="room-status" id="chatInfo">Привет</span>
+                        <div class="room-avatar" id="roomAvatar">📢</div>
+                        <div class="room-text">
+                            <span class="room-name" id="roomName">Общий чат</span>
+                            <span class="room-status" id="chatInfo"></span>
+                        </div>
                     </div>
                 </div>
                 <div class="header-actions">
@@ -112,7 +119,7 @@
     </div>
 
     <!-- Image Modal -->
-    <div class="image-modal" id="imageModal" onclick="closeImageModal()">
+    <div class="image-modal" id="imageModal">
         <img id="modalImage" src="" alt="Просмотр изображения">
     </div>
 

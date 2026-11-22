@@ -3,7 +3,6 @@
 // ============================================================
 let username = '';
 let user_id = '';
-let authToken = localStorage.getItem('authToken') || '';
 let updateInterval = null;
 let editingMessageId = null;
 let replyingTo = null;
@@ -16,6 +15,8 @@ let activeChat = { type: 'public', peerId: null, peerName: '' };
 let dmThreads = [];
 let dmThreadsInitialized = false;
 let usersSignature = '';
+
+// Сессия хранится в HttpOnly-cookie (её ставит сервер) — токен в JS не нужен.
 
 // ============================================================
 // DOM
@@ -48,7 +49,9 @@ const fileInput = document.getElementById('fileInput');
 const attachmentPreviewContainer = document.getElementById('attachmentPreviewContainer');
 const notificationContainer = document.getElementById('notificationContainer');
 const roomName = document.getElementById('roomName');
+const roomAvatar = document.getElementById('roomAvatar');
 const publicChatBtn = document.getElementById('publicChatBtn');
+const selfChatBtn = document.getElementById('selfChatBtn');
 const dmListEl = document.getElementById('dmList');
 const currentUserBadge = document.getElementById('currentUserBadge');
 const currentUserAvatar = document.getElementById('currentUserAvatar');
@@ -131,7 +134,6 @@ function insertEmoji(emoji) {
 // ============================================================
 function apiFetch(url, options = {}) {
     const headers = Object.assign({}, options.headers || {});
-    if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
     if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
     return fetch(url, Object.assign({}, options, { headers, credentials: 'same-origin' }))
         .then(r => {
@@ -244,28 +246,11 @@ function doLogin() {
         if (!r.ok) throw new Error(data.error || 'Ошибка входа');
         return data;
     }).then(data => {
-        authToken = data.token;
         username = data.username;
         user_id = data.user_id;
-        localStorage.setItem('authToken', authToken);
-        localStorage.setItem('chatUsername', username);
-        isLoggedIn = true;
-        usernameContainer.style.display = 'none';
-        logoutBtn.style.display = 'flex';
-        messageInput.disabled = false;
-        sendBtn.disabled = false;
         passwordInput.value = '';
         messageInput.focus();
-        chatInfo.textContent = 'Онлайн';
-        updateCurrentUserBadge();
-        clearHistoryBtn.style.display = 'flex';
-        loadMessages(); updateUsersList(); updateDmThreads();
-        if (updateInterval) clearInterval(updateInterval);
-        updateInterval = setInterval(() => {
-            if (isLoggedIn) {
-                loadMessages(); updateUsersList(); updateDmThreads(); sendHeartbeat();
-            }
-        }, 3000);
+        startApp();
         requestNotificationPermission();
         showNotification('Успех', `Вы вошли как ${username}`, '👋');
     }).catch(err => {
@@ -274,22 +259,42 @@ function doLogin() {
     }).finally(() => { loginBtn.disabled = false; });
 }
 
+// Общий запуск после входа/авто-входа
+function startApp() {
+    isLoggedIn = true;
+    usernameContainer.style.display = 'none';
+    logoutBtn.style.display = 'flex';
+    clearHistoryBtn.style.display = 'flex';
+    messageInput.disabled = false;
+    sendBtn.disabled = false;
+    updateCurrentUserBadge();
+    updateChatHeader();
+    loadMessages(); updateUsersList(); updateDmThreads();
+    if (updateInterval) clearInterval(updateInterval);
+    updateInterval = setInterval(() => {
+        if (isLoggedIn) {
+            loadMessages(); updateUsersList(); updateDmThreads(); sendHeartbeat();
+        }
+    }, 3000);
+}
+
 function handleLogoutLocal(silent = false) {
     isLoggedIn = false;
     if (updateInterval) { clearInterval(updateInterval); updateInterval = null; }
+    // подчищаем токены старых версий — теперь сессия только в HttpOnly-cookie
     localStorage.removeItem('authToken');
     localStorage.removeItem('chatUsername');
-    authToken = ''; username = ''; user_id = '';
+    username = ''; user_id = '';
     usernameContainer.style.display = 'flex';
     logoutBtn.style.display = 'none';
     clearHistoryBtn.style.display = 'none';
     updateCurrentUserBadge();
     messageInput.disabled = true;
     sendBtn.disabled = true;
-    chatInfo.textContent = silent ? 'Сессия истекла, войдите заново' : 'Вы вышли';
     messagesCache = []; usersCache = []; pendingAttachments = [];
     markedReadIds.clear();
     resetChatState();
+    updateChatHeader(silent);
     updateAttachmentPreview(); cancelReply();
     messagesContainer.innerHTML = '';
     if (!silent) showNotification('Выход', 'Вы вышли из чата', '🚪');
@@ -301,33 +306,23 @@ logoutBtn.addEventListener('click', () => {
     apiFetch('/api/logout', { method: 'POST' }).finally(() => handleLogoutLocal());
 });
 
-// Авто-вход по сохранённому токену
-if (authToken) {
-    fetch('/api/heartbeat', {
-        method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + authToken },
-        credentials: 'same-origin',
-    }).then(r => {
-        if (!r.ok) { handleLogoutLocal(true); return; }
-        isLoggedIn = true;
-        username = localStorage.getItem('chatUsername') || '';
-        usernameContainer.style.display = 'none';
-        logoutBtn.style.display = 'flex';
-        clearHistoryBtn.style.display = 'flex';
-        updateCurrentUserBadge();
-        messageInput.disabled = false;
-        sendBtn.disabled = false;
-        loadMessages(); updateUsersList(); updateDmThreads();
-        if (updateInterval) clearInterval(updateInterval);
-        updateInterval = setInterval(() => {
-            if (isLoggedIn) {
-                loadMessages(); updateUsersList(); updateDmThreads(); sendHeartbeat();
-            }
-        }, 3000);
-    }).catch(() => handleLogoutLocal(true));
-} else {
-    setTimeout(() => usernameInput.focus(), 500);
-}
+// Авто-вход по HttpOnly-cookie сессии (токен в JS больше не хранится)
+fetch('/api/me', { credentials: 'same-origin' })
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+        if (!data || !data.user_id) {
+            updateChatHeader();
+            setTimeout(() => usernameInput.focus(), 500);
+            return;
+        }
+        username = data.username;
+        user_id = data.user_id;
+        startApp();
+    })
+    .catch(() => {
+        updateChatHeader();
+        setTimeout(() => usernameInput.focus(), 500);
+    });
 
 function updateCurrentUserBadge() {
     if (!isLoggedIn || !username) {
@@ -344,13 +339,16 @@ function updateCurrentUserBadge() {
 clearHistoryBtn.addEventListener('click', clearChatHistory);
 function clearChatHistory() {
     if (!isLoggedIn) return;
+    const isSelf = activeChat.type === 'self';
     const isDm = activeChat.type === 'dm';
-    const target = isDm
-        ? `переписку с ${activeChat.peerName} (у обоих участников)`
-        : 'общий чат (у всех участников)';
+    const target = isSelf
+        ? 'свои заметки (только у вас)'
+        : isDm
+            ? `переписку с ${activeChat.peerName} (у обоих участников)`
+            : 'общий чат (у всех участников)';
     if (!confirm(`Очистить ${target}? Все сообщения и вложения будут удалены безвозвратно.`)) return;
 
-    const scope = isDm ? activeChat.peerId : 'public';
+    const scope = activeChat.type === 'public' ? 'public' : activeChat.peerId;
     clearHistoryBtn.disabled = true;
     apiFetch('/api/clear_history', { method: 'POST', body: JSON.stringify({ scope }) })
         .then(r => r.json())
@@ -424,7 +422,9 @@ function sendMessage() {
 
     const payload = { message: message || '', attachments: pendingAttachments };
     if (replyingTo) payload.reply_to = replyingTo;
-    if (activeChat.type === 'dm' && activeChat.peerId) payload.recipient_id = activeChat.peerId;
+    if (activeChat.type !== 'public' && activeChat.peerId) {
+        payload.recipient_id = activeChat.peerId;
+    }
 
     apiFetch('/api/send', { method: 'POST', body: JSON.stringify(payload) })
         .then(() => {
@@ -434,7 +434,10 @@ function sendMessage() {
             updateCharCount(); autoResizeTextarea(); messageInput.focus();
             cancelReply();
             setTimeout(() => { loadMessages(); updateDmThreads(); }, 100);
-            showNotification('✅', activeChat.type === 'dm' ? 'Личное сообщение отправлено' : 'Тикет создан', '📋');
+            const okText = activeChat.type === 'self' ? 'Заметка сохранена'
+                : activeChat.type === 'dm' ? 'Личное сообщение отправлено'
+                : 'Тикет создан';
+            showNotification('✅', okText, activeChat.type === 'self' ? '📝' : '📋');
         })
         .catch(() => showNotification('Ошибка', 'Не удалось отправить', '⛔'));
 }
@@ -443,8 +446,7 @@ function resetEditor() {
     editingMessageId = null;
     chatInput.classList.remove('editing');
     sendBtn.textContent = '🚀 Отправить';
-    messageInput.placeholder = activeChat.type === 'dm'
-        ? `Сообщение для ${activeChat.peerName}...` : 'Опишите ваш вопрос или проблему...';
+    messageInput.placeholder = chatPlaceholder();
     messageInput.value = '';
     pendingAttachments = [];
     updateAttachmentPreview();
@@ -533,15 +535,14 @@ function markMessageAsRead(messageId) {
 // ============================================================
 function loadMessages() {
     if (!isLoggedIn) return;
-    const url = activeChat.type === 'dm'
+    const url = activeChat.type !== 'public' && activeChat.peerId
         ? `/api/messages?with=${encodeURIComponent(activeChat.peerId)}`
         : '/api/messages';
-    const headers = { 'Authorization': 'Bearer ' + authToken };
+    const headers = {};
     if (lastMessagesEtag) headers['If-None-Match'] = lastMessagesEtag;
-    fetch(url, { headers, credentials: 'same-origin' })
+    apiFetch(url, { headers })
         .then(r => {
             if (r.status === 304) return null;
-            if (r.status === 401) { handleLogoutLocal(true); return null; }
             lastMessagesEtag = r.headers.get('ETag') || lastMessagesEtag;
             return r.json();
         }).then(messages => {
@@ -657,24 +658,36 @@ function createTicketElement(msg) {
         card.appendChild(c);
     }
 
-    const actions = document.createElement('div');
-    actions.className = 'ticket-actions';
-    actions.innerHTML = `
-        <button class="reply-btn" onclick="startReply('${msg.id}')">↩️ Ответить</button>
-        <button class="complete-btn ${msg.completed === 1 ? 'active' : ''}" onclick="toggleCompleted('${msg.id}')">
-            ${msg.completed === 1 ? '✅ Выполнено' : '✓ Выполнено'}
-        </button>`;
-    if (isOwn) {
-        actions.innerHTML += `
-            <button class="edit-btn" onclick="editMessage('${msg.id}')">✏️ Редактировать</button>
-            <button class="delete-btn" onclick="deleteMessage('${msg.id}')">🗑️ Удалить</button>`;
-    }
+    const actions = buildTicketActions(msg, isOwn);
     card.appendChild(header);
     card.appendChild(body);
     card.appendChild(actions);
     ticket.appendChild(card);
     if (!isOwn && msg.id) markMessageAsRead(msg.id);
     return ticket;
+}
+
+// Кнопки действий собираем через addEventListener: inline on* атрибуты
+// блокируются CSP (script-src 'self').
+function buildTicketActions(msg, isOwn) {
+    const actions = document.createElement('div');
+    actions.className = 'ticket-actions';
+    const add = (cls, label, handler) => {
+        const btn = document.createElement('button');
+        btn.className = cls;
+        btn.textContent = label;
+        btn.addEventListener('click', handler);
+        actions.appendChild(btn);
+    };
+    add('reply-btn', '↩️ Ответить', () => startReply(msg.id));
+    add('complete-btn' + (msg.completed === 1 ? ' active' : ''),
+        msg.completed === 1 ? '✅ Выполнено' : '✓ Выполнено',
+        () => toggleCompleted(msg.id));
+    if (isOwn) {
+        add('edit-btn', '✏️ Редактировать', () => editMessage(msg.id));
+        add('delete-btn', '🗑️ Удалить', () => deleteMessage(msg.id));
+    }
+    return actions;
 }
 
 function createAttachmentEl(att) {
@@ -703,8 +716,8 @@ function createAttachmentEl(att) {
 }
 
 function attachmentUrl(att, download) {
-    const token = encodeURIComponent(authToken);
-    return `/api/attachment/${att.id}?token=${token}` + (download ? '&download=1' : '');
+    // Авторизация — по HttpOnly-cookie, токен в URL не передаём
+    return `/api/attachment/${att.id}` + (download ? '?download=1' : '');
 }
 
 function updateTicketElement(el, msg) {
@@ -737,16 +750,7 @@ function updateTicketElement(el, msg) {
     }
     const actions = card.querySelector('.ticket-actions');
     if (actions) {
-        actions.innerHTML = `
-            <button class="reply-btn" onclick="startReply('${msg.id}')">↩️ Ответить</button>
-            <button class="complete-btn ${msg.completed === 1 ? 'active' : ''}" onclick="toggleCompleted('${msg.id}')">
-                ${msg.completed === 1 ? '✅ Выполнено' : '✓ Выполнено'}
-            </button>`;
-        if (isOwn) {
-            actions.innerHTML += `
-                <button class="edit-btn" onclick="editMessage('${msg.id}')">✏️ Редактировать</button>
-                <button class="delete-btn" onclick="deleteMessage('${msg.id}')">🗑️ Удалить</button>`;
-        }
+        actions.replaceWith(buildTicketActions(msg, isOwn));
     }
     if (!isOwn && msg.id) markMessageAsRead(msg.id);
 }
@@ -763,20 +767,83 @@ function scrollToMessage(id) {
 }
 
 // ============================================================
-// ЧАТЫ (общий / личные)
+// ЧАТЫ (общий / личные / заметки)
 // ============================================================
 publicChatBtn.addEventListener('click', () => switchChat('public', null, ''));
+selfChatBtn.addEventListener('click', () => {
+    if (!isLoggedIn) {
+        showNotification('Нужен вход', 'Войдите, чтобы вести заметки', '🔒');
+        usernameInput.focus();
+        return;
+    }
+    switchChat('self', user_id, username);
+});
+
+function chatPlaceholder() {
+    if (activeChat.type === 'self') return 'Заметка для себя — видно только вам...';
+    if (activeChat.type === 'dm') return `Сообщение для ${activeChat.peerName}...`;
+    return 'Опишите ваш вопрос или проблему...';
+}
+
+function pluralRu(n, one, few, many) {
+    const mod10 = n % 10, mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return one;
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+    return many;
+}
+
+// Верхняя панель: наглядно показывает, какой чат открыт
+function updateChatHeader(silent = false) {
+    if (!isLoggedIn) {
+        roomAvatar.textContent = '📢';
+        roomAvatar.style.background = '';
+        roomAvatar.style.boxShadow = '';
+        roomName.textContent = 'Общий чат';
+        chatInfo.textContent = silent
+            ? 'Сессия истекла — войдите заново'
+            : 'Войдите, чтобы писать в чат';
+        return;
+    }
+    if (activeChat.type === 'public') {
+        roomAvatar.textContent = '📢';
+        roomAvatar.style.background = '';
+        roomAvatar.style.boxShadow = '';
+        roomName.textContent = 'Общий чат';
+        const online = usersCache.filter(u => u.online).length;
+        chatInfo.textContent = online > 0
+            ? `${online} ${pluralRu(online, 'участник', 'участника', 'участников')} онлайн`
+            : 'Пока никого нет онлайн';
+        return;
+    }
+    if (activeChat.type === 'self') {
+        roomAvatar.textContent = '📝';
+        roomAvatar.style.background = '';
+        roomAvatar.style.boxShadow = '';
+        roomName.textContent = 'Мои заметки';
+        chatInfo.textContent = 'Личное пространство — видно только вам';
+        return;
+    }
+    const peer = usersCache.find(u => u.user_id === activeChat.peerId);
+    const name = activeChat.peerName || (peer && peer.username) || 'Пользователь';
+    roomAvatar.textContent = (name || '?').charAt(0).toUpperCase();
+    applyAvatarStyle(roomAvatar, name);
+    roomName.textContent = name;
+    chatInfo.textContent = peer
+        ? (peer.online ? 'в сети сейчас' : 'был(а) ' + lastSeenText(peer.last_seen))
+        : 'личный диалог';
+}
 
 function switchChat(type, peerId, peerName) {
     if (type === 'dm' && (!peerId || peerId === user_id)) return;
+    if (type === 'self' && !user_id) return;
     activeChat = { type, peerId: peerId || null, peerName: peerName || '' };
     lastMessagesEtag = '';
     messagesCache = [];
     messagesContainer.innerHTML = '';
     publicChatBtn.classList.toggle('active', type === 'public');
-    roomName.textContent = type === 'dm' ? `💬 ${peerName}` : '📢 Дискорд для бедных';
-    messageInput.placeholder = type === 'dm'
-        ? `Сообщение для ${peerName}...` : 'Опишите ваш вопрос или проблему...';
+    selfChatBtn.classList.toggle('active', type === 'self');
+    updateChatHeader();
+    messageInput.placeholder = chatPlaceholder();
     cancelReply();
     renderDmList();
     messageInput.focus();
@@ -795,7 +862,12 @@ function resetChatState() {
     usersSignature = '';
     lastMessagesEtag = '';
     publicChatBtn.classList.add('active');
-    roomName.textContent = '📢 Дискорд для бедных';
+    selfChatBtn.classList.remove('active');
+    roomName.textContent = 'Общий чат';
+    roomAvatar.textContent = '📢';
+    roomAvatar.style.background = '';
+    roomAvatar.style.boxShadow = '';
+    messageInput.placeholder = chatPlaceholder();
     dmListEl.innerHTML = '';
 }
 
@@ -861,6 +933,7 @@ function updateUsers(users) {
     });
     const online = users.filter(u => u.online).length;
     onlineCount.textContent = `${online} пользователей онлайн`;
+    updateChatHeader();
 }
 
 // ============================================================
@@ -871,7 +944,8 @@ function updateDmThreads() {
     apiFetch('/api/dm_threads')
         .then(r => r.json())
         .then(data => {
-            const threads = data.threads || [];
+            // «Заметки» (переписка с самим собой) показываем отдельной кнопкой, не в списке ЛС
+            const threads = (data.threads || []).filter(t => !t.is_self);
             if (dmThreadsInitialized) {
                 threads.forEach(t => {
                     const prev = dmThreads.find(x => x.peer_id === t.peer_id);
@@ -898,6 +972,7 @@ function updateDmThreads() {
             dmThreads = threads;
             dmThreadsInitialized = true;
             renderDmList();
+            updateChatHeader();
         }).catch(() => {});
 }
 
@@ -1004,7 +1079,10 @@ function requestNotificationPermission() {
 // ============================================================
 function openImageModal(src) { modalImage.src = src; imageModal.classList.add('show'); }
 function closeImageModal() { imageModal.classList.remove('show'); }
-window.closeImageModal = closeImageModal;
+imageModal.addEventListener('click', closeImageModal);
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && imageModal.classList.contains('show')) closeImageModal();
+});
 
 // ============================================================
 // HELPERS
@@ -1086,9 +1164,12 @@ function formatFileSize(bytes) {
 }
 function escapeHtml(text) {
     if (text === null || text === undefined) return '';
-    const div = document.createElement('div');
-    div.textContent = String(text);
-    return div.innerHTML;
+    return String(text)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 function scrollToBottom() {
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
