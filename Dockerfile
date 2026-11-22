@@ -23,6 +23,7 @@ RUN mkdir -p /app/data
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PORT=5000 \
+    HOST=0.0.0.0 \
     DB_PATH=/app/data/chat.db
 
 # Порт, который слушает приложение
