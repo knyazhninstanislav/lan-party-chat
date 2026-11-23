@@ -15,17 +15,6 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 
-def find_free_port(start_port=5555, max_port=5555):
-    for port in range(start_port, max_port):
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(('', port))
-                return port
-        except OSError:
-            continue
-    return start_port
-
-
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -59,21 +48,16 @@ def cleanup_loop():
             pass
 
 
-PORT = int(os.environ.get('PORT', 0))
-if not PORT:
-    PORT = find_free_port()
-
-# По умолчанию слушаем только localhost: снаружи доступ — через nginx.
-# В Docker задайте HOST=0.0.0.0.
+# Фиксированный адрес: снаружи доступ только через nginx.
+# Меняется через переменные окружения (например, для Docker: HOST=0.0.0.0).
 HOST = os.environ.get('HOST', '127.0.0.1')
-
-print(f"🔍 Используется порт: {PORT}")
+PORT = int(os.environ.get('PORT', 5555))
 
 
 def run_server():
     print("=" * 50)
     print("🚀 Тикет-система запущена!")
-    print(f"📱 http://{HOST}:{PORT}")
+    print(f"📱 http://{HOST}:{PORT}  (доступ — через nginx)")
     print("=" * 50)
     print("🔒 Вход по паролю (регистрация + логин)")
     print("🛡️ Rate limit, сессии, WAL, индексы, CSP, лимиты")
@@ -82,18 +66,11 @@ def run_server():
 
     threading.Thread(target=cleanup_loop, daemon=True).start()
 
-    try:
-        with ThreadingHTTPServer((HOST, PORT), ChatHandler) as httpd:
-            httpd.serve_forever()
-    except OSError as e:
-        if "10048" in str(e) or "Address already in use" in str(e):
-            new_port = find_free_port(PORT + 1)
-            print(f"🔄 Порт {PORT} занят, используем {new_port}")
-            with ThreadingHTTPServer((HOST, new_port), ChatHandler) as httpd:
-                print(f"✅ http://{HOST}:{new_port}")
-                httpd.serve_forever()
-        else:
-            raise
+    # Без автопоиска свободного порта: nginx ходит строго на HOST:PORT.
+    # Если порт занят — это ошибка конфигурации, сервер должен упасть,
+    # а не тихо переехать на другой порт, куда nginx не обращается.
+    with ThreadingHTTPServer((HOST, PORT), ChatHandler) as httpd:
+        httpd.serve_forever()
 
 
 if __name__ == '__main__':

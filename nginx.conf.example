@@ -1,82 +1,62 @@
-# ============================================================
-# Пример конфигурации nginx для LAN Party за reverse proxy
-# ------------------------------------------------------------
-# Приложение слушает 127.0.0.1:5000 (HOST по умолчанию) —
-# снаружи его отдаёт только nginx.
-#
-# Запуск приложения за nginx:
-#   HOST=127.0.0.1 PORT=5000 TRUST_PROXY=1 COOKIE_SECURE=1 python server.py
-#
-# TRUST_PROXY=1   — доверять X-Real-IP / X-Forwarded-For / X-Forwarded-Proto
-#                   (нужно для rate-limit по реальному IP и https-куки);
-# COOKIE_SECURE=1 — ставить Secure на cookie сессии (только HTTPS).
-#
-# Не задавайте TRUST_PROXY=1, если приложение доступно напрямую:
-# иначе клиент сможет подделать IP и обойти rate limit.
-# ============================================================
+#user  nobody;
+worker_processes  1;
 
-upstream lan_party {
-    server 127.0.0.1:5000;
-    keepalive 16;
+events {
+    worker_connections  1024;
 }
 
-# HTTP → HTTPS
-server {
-    listen 80;
-    server_name chat.example.com;
+http {
+    include       mime.types;
+    default_type  application/octet-stream;
 
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-    }
+    sendfile        on;
+    keepalive_timeout  65;
 
-    location / {
-        return 301 https://$host$request_uri;
-    }
-}
+    # Определяем зону ограничения скорости: 10 запросов в секунду на IP
+    limit_req_zone $binary_remote_addr zone=chat_limit:10m rate=10r/s;
 
-server {
-    listen 443 ssl http2;
-    server_name chat.example.com;
+    # Блок HTTPS-сервера
+    server {
+        listen 443 ssl;
+        server_name lanparty.ru;
 
-    ssl_certificate     /etc/letsencrypt/live/chat.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/chat.example.com/privkey.pem;
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         HIGH:!aNULL:!MD5;
+        # Пути к сертификатам
+        ssl_certificate     C:/nginx/conf/ssl/lanparty.crt;
+        ssl_certificate_key C:/nginx/conf/ssl/lanparty.key;
 
-    # Вложения уходят на сервер в base64: до 5 файлов по 10 МБ
-    # + запас на JSON/overhead. Должно совпадать с MAX_BODY_SIZE.
-    client_max_body_size 72m;
-    client_body_timeout  60s;
-    client_header_timeout 30s;
-    send_timeout 60s;
+        # Вложения уходят на сервер в base64: до 5 файлов по 10 МБ
+        # + запас на JSON/overhead. Должно совпадать с MAX_BODY_SIZE.
+        client_max_body_size 72m;
+        client_body_timeout  60s;
+        client_header_timeout 30s;
+        send_timeout 60s;
 
-    add_header X-Content-Type-Options nosniff always;
-    add_header Referrer-Policy no-referrer always;
-    # HSTS включает только когда вы уверены, что HTTPS будет всегда
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Referrer-Policy no-referrer always;
+        # HSTS — только если HTTPS будет всегда
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
-    location / {
-        proxy_pass http://lan_party;
-        proxy_http_version 1.1;
-        proxy_set_header Connection "";
+        location / {
+            proxy_pass http://127.0.0.1:5555;
+            proxy_http_version 1.1;
+            proxy_set_header Connection "";
 
-        # Обязательные заголовки для корректной работы приложения
-        proxy_set_header Host              $host;
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header X-Forwarded-Host  $host;
+            # ВАЖНО: $http_host содержит порт (lanparty.ru:443), а $host — нет.
+            # Origin браузера будет https://lanparty.ru:443, поэтому Host тоже
+            # должен содержать порт, иначе проверка Origin на Python падает с 403.
+            proxy_set_header Host              $http_host;
+            proxy_set_header X-Real-IP         $remote_addr;
+            proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Host  $http_host;
+            proxy_set_header X-Forwarded-Port  $server_port;
 
-        proxy_connect_timeout 10s;
-        proxy_read_timeout    120s;
-        proxy_send_timeout    120s;
+            proxy_connect_timeout 10s;
+            proxy_read_timeout    120s;
+            proxy_send_timeout    120s;
 
-        # Большие вложения не буферизуем целиком на диск
-        proxy_request_buffering off;
-    }
-
-    # Долгий поллинг отсутствует, но heartbeat/сообщения — обычные короткие запросы
-    location = /api/attachment {
-        proxy_pass http://lan_party;
+            # Большие вложения не буферизуем целиком на диск
+            proxy_request_buffering off;
+        }
     }
 }
