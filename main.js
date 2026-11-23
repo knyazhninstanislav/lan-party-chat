@@ -301,9 +301,19 @@ function handleLogoutLocal(silent = false) {
     usernameInput.focus();
 }
 
+// Выход: сбрасываем UI только если сервер подтвердил удаление сессии.
+// Иначе cookie останется, и после reload пользователь снова окажется «в чате».
 logoutBtn.addEventListener('click', () => {
     if (!confirm('Выйти?')) return;
-    apiFetch('/api/logout', { method: 'POST' }).finally(() => handleLogoutLocal());
+    apiFetch('/api/logout', { method: 'POST' })
+        .then(r => {
+            if (!r.ok) throw new Error('Сервер не подтвердил выход (HTTP ' + r.status + ')');
+            return r.json().catch(() => ({}));
+        })
+        .then(() => handleLogoutLocal())
+        .catch(err => {
+            showNotification('Ошибка выхода', err.message || 'Попробуйте ещё раз', '⛔');
+        });
 });
 
 // Авто-вход по HttpOnly-cookie сессии (токен в JS больше не хранится)

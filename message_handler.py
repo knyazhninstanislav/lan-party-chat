@@ -655,23 +655,75 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         return cookie
 
     def _origin_allowed(self) -> bool:
-        """CSRF-защита: изменяющие запросы принимаем только со своего origin."""
+        """CSRF-защита: изменяющие запросы принимаем только со своего origin.
+
+        Сравниваем hostname и порт с учётом портов по умолчанию (80/443),
+        потому что за nginx порт в Host и Origin может отличаться: `$host`
+        не содержит порт, `$http_host` содержит, а Origin всегда содержит
+        фактический порт, если он не дефолтный для схемы.
+        """
         origin = (self.headers.get('Origin') or '').strip()
         if not origin:
             return True  # curl/API-клиенты без Origin
+
         try:
             parsed = urlparse(origin)
         except ValueError:
             return False
-        if not parsed.netloc:
+        if not parsed.netloc or parsed.scheme not in ('http', 'https'):
             return False  # Origin: null и т.п.
+
         host = (self.headers.get('Host') or '').strip()
         if TRUST_PROXY:
             host = (self.headers.get('X-Forwarded-Host') or host).strip()
-            proto = (self.headers.get('X-Forwarded-Proto') or '').split(',')[0].strip().lower()
-            if proto and parsed.scheme != proto:
-                return False
-        return parsed.netloc.lower() == host.lower()
+
+        if not host:
+            return False
+
+        def split_hostport(value: str):
+            """'example.com:8080' -> ('example.com', 8080); 'example.com' -> ('example.com', None).
+            Корректно обрабатывает IPv6 в квадратных скобках."""
+            value = value.strip().lower()
+            if value.startswith('['):
+                end = value.find(']')
+                if end == -1:
+                    return value, None
+                hostpart = value[:end + 1]
+                rest = value[end + 1:]
+                port = None
+                if rest.startswith(':'):
+                    try:
+                        port = int(rest[1:])
+                    except ValueError:
+                        port = None
+                return hostpart, port
+            if ':' in value:
+                h, _, p = value.rpartition(':')
+                try:
+                    return h, int(p)
+                except ValueError:
+                    return value, None
+            return value, None
+
+        def default_port(scheme: str) -> int:
+            return 443 if scheme == 'https' else 80
+
+        o_host, o_port = split_hostport(parsed.netloc)
+        h_host, h_port = split_hostport(host)
+
+        if o_port is None:
+            o_port = default_port(parsed.scheme)
+
+        if h_port is None:
+            # Схему для Host берём из Origin; при TRUST_PROXY — из X-Forwarded-Proto.
+            h_scheme = parsed.scheme
+            if TRUST_PROXY:
+                proto = (self.headers.get('X-Forwarded-Proto') or '').split(',')[0].strip().lower()
+                if proto in ('http', 'https'):
+                    h_scheme = proto
+            h_port = default_port(h_scheme)
+
+        return o_host == h_host and o_port == h_port
 
     def _send(self, status, body, content_type='application/json',
               extra_headers=None, compress=False):
@@ -805,17 +857,30 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             uid = user['user_id']
             now = time.time()
             conn = get_db()
+            # ВАЖНО: без оконных функций (ROW_NUMBER() OVER ...) — совместимо
+            # со старым SQLite, который идёт в комплекте с Python 3.7 (SQLite < 3.25).
+            # Идея: CTE dm — все DM текущего пользователя с вычисленным peer_id,
+            # CTE agg — максимальный created_at по каждому peer_id,
+            # latest — строки, у которых created_at совпадает с максимумом.
             rows = conn.execute('''
                 WITH dm AS (
                     SELECT m.id, m.user_id, m.recipient_id, m.message, m.created_at,
                            CASE WHEN m.user_id = ? THEN m.recipient_id ELSE m.user_id END AS peer_id
                     FROM messages m
-                    WHERE m.recipient_id IS NOT NULL AND (m.user_id = ? OR m.recipient_id = ?)
+                    WHERE m.recipient_id IS NOT NULL
+                      AND (m.user_id = ? OR m.recipient_id = ?)
+                ),
+                agg AS (
+                    SELECT peer_id, MAX(created_at) AS max_created_at
+                    FROM dm
+                    GROUP BY peer_id
                 ),
                 latest AS (
-                    SELECT *, ROW_NUMBER() OVER (
-                        PARTITION BY peer_id ORDER BY created_at DESC, id DESC) AS rn
-                    FROM dm
+                    SELECT d.id, d.user_id, d.recipient_id, d.message, d.created_at, d.peer_id
+                    FROM dm d
+                    JOIN agg a
+                      ON a.peer_id = d.peer_id
+                     AND a.max_created_at = d.created_at
                 )
                 SELECT l.peer_id, l.user_id AS last_sender_id, l.message, l.created_at,
                        u.username AS peer_username, u.last_seen AS peer_last_seen,
@@ -827,14 +892,20 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
                           AND rr.message_id IS NULL) AS unread
                 FROM latest l
                 LEFT JOIN users u ON u.user_id = l.peer_id
-                WHERE l.rn = 1
-                ORDER BY l.created_at DESC
+                ORDER BY l.created_at DESC, l.id DESC
             ''', (uid, uid, uid, uid, uid)).fetchall()
             conn.close()
             threads = []
+            seen_peers = set()
             for r in rows:
                 if r['peer_id'] is None:
                     continue
+                # дедуп: если у двух сообщений одного peer_id одинаковый created_at
+                # (точность strftime('%s','now') — секунды), берём только первое
+                # (оно уже отсортировано как самое свежее по id DESC).
+                if r['peer_id'] in seen_peers:
+                    continue
+                seen_peers.add(r['peer_id'])
                 last_seen = r['peer_last_seen'] or 0
                 is_self = r['peer_id'] == uid
                 threads.append({
@@ -901,8 +972,11 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         ip = get_client_ip(self)
 
-        # CSRF: изменяющие запросы только с нашего origin
-        if not self._origin_allowed():
+        # CSRF: изменяющие запросы только с нашего origin.
+        # Исключение — logout: он идемпотентен и трогает только cookie текущего
+        # клиента, поэтому проверку Origin для него пропускаем, чтобы кнопка
+        # «Выйти» не залипала при любых проблемах с заголовками за прокси.
+        if path != '/api/logout' and not self._origin_allowed():
             self._json(403, {'error': 'Запрос с чужого источника отклонён'})
             return
 
@@ -977,6 +1051,7 @@ class ChatHandler(http.server.BaseHTTPRequestHandler):
             self._json(200, {'success': True},
                     {'Set-Cookie': self._session_cookie('', 0)})
             return
+
         # ---- SEND ----
         if path == '/api/send':
             user = self._require_auth()
