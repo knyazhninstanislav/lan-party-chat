@@ -21,7 +21,7 @@
 - 👀 видеть статус прочтения (`✅ прочитано N раз`);
 - 🎨 **разноцветные градиентные аватарки**, автоматически привязанные к имени.
 
-<img width="1031" height="654" alt="image" src="https://github.com/user-attachments/assets/4f0c17ff-38f4-4275-b297-6a7755426680" />
+<img width="1217" height="880" alt="image" src="https://github.com/user-attachments/assets/81c90f49-19a5-406a-ac49-58014c64a54d" />
 
 
 Сервер написан на **чистом Python** (стандартная библиотека), клиент — на **ванильном JavaScript**. Никаких фреймворков, сборщиков и `npm install`.
